@@ -1,14 +1,14 @@
 
 
-# SiBuGEC
-## Self-similar Bubble Expansion with General Equation of State Code
+# snobex
+## Self-similar Non-conformal Obstructions to Bubble expansion
 
 
 <p align="center">
-  <img src="sibugec_logo.png" alt="SiBuGEC Logo" width="600">
+  <img src="snobex_logo.png" alt="snobex Logo" width="600">
 </p>
 
-SiBuGEC computes self-similar hydrodynamic bubble solutions
+snobex (Self-similar Non-conformal Obstructions to Bubble expansion) computes self-similar hydrodynamic bubble solutions
 (detonations, deflagrations, and hybrids) for cosmological first-order
 phase transitions, for a general equation of state.
 
@@ -43,7 +43,7 @@ and run scripts from its root directory.
 ## File structure
 
 ```
-sibugec/
+snobex/
     __init__.py          Package entry point and public API
     eos.py               EoS models (pplus, pminus) and custom EoS loader
     thermodynamics.py    Entropy ODEs, temperature, free energy, T_c
@@ -80,7 +80,7 @@ python main_bubble_solver.py
 ### 3. Scripting
 
 ```python
-from sibugec.plotting import interactive_bubble_plot
+from snobex.plotting import interactive_bubble_plot
 
 fig, ax = interactive_bubble_plot(
     eTH=0.5, eTL=2.0,
@@ -114,7 +114,7 @@ Then set `CUSTOM_EOS_FILE` in either entry-point script:
 CUSTOM_EOS_FILE = "my_eos.dat"
 ```
 
-The loader (`sibugec.eos.load_custom_eos`) fits a cubic spline to the
+The loader (`snobex.eos.load_custom_eos`) fits a cubic spline to the
 data and returns callable `p(e)` and `c_s²(e)` functions that are
 passed directly to the solver.  If a third column is present it is used
 as `c_s²(e)` directly; otherwise it is derived numerically from `p(e)`.
@@ -163,7 +163,7 @@ When `saving=True` (or clicking "Compute all bubbles" with the flag
 enabled), results are saved as a pickle file:
 
 ```
-sibugec_results_<eTH>_<eTL>_<p0>.pkl
+snobex_results_<eTH>_<eTL>_<p0>.pkl
 ```
 
 Two profile files are written to `output_dir` after each click event:

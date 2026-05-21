@@ -1,7 +1,7 @@
 """
-sibugec.plotting
+snobex.plotting
 ================
-Interactive phase-space bubble plot for SiBuGEC.
+Interactive phase-space bubble plot for snobex.
 
 The main entry point is ``interactive_bubble_plot``.  It computes all
 separator curves and hydrodynamic flows, then displays a live
@@ -41,7 +41,7 @@ from .separators import (
 def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energies_allowed,
                           p0=0.0, p1=0.0, xiw_resolution=25, en_resolution=50,
                           contour_resolution=500, show_eos=True,
-                          sminus=None, splus=None, n=4.0, delta=1.0,
+                          sminus=None, splus=None, tminus=None, tplus=None, n=4.0, delta=1.0,
                           sTL=None, sTH=None, saving=False, load_eos=None,
                           custom_pplus=None, custom_pminus=None,
                           custom_cs2_plus=None, custom_cs2_minus=None,
@@ -108,7 +108,7 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     }
 
     if load_eos is not None:
-        print(f"[SiBuGEC] Loading EoS from '{load_eos}'")
+        print(f"[snobex] Loading EoS from '{load_eos}'")
         with open(load_eos, "rb") as f:
             results_dict = pickle.load(f)
         ep = results_dict['EoS_parameters']
@@ -139,7 +139,8 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         e_max = fsolve(lambda e: pminus(eTL, eTL, p0) - pplus(e, eTH, p1), eTL * 2)[0]
     else:
         e_max = fsolve(lambda e: pminus(eTL, eTL, p0) - pplus(e, eTH, p1), eTH * 5)[0]
-    print(f"[SiBuGEC] e_max = {e_max:.4f}")
+    e_max *= 2.0
+    print(f"[snobex] e_max = {e_max:.4f}")
 
     # ------------------------------------------------------------------
     # Speed of sound
@@ -159,26 +160,12 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         cs2_minus = CubicSpline(e_minus, np.gradient(p_minus, e_minus))
 
     # ------------------------------------------------------------------
-    # Inflection-point equation
+    # Inflection-point equation (needed for hybrid separators)
     # ------------------------------------------------------------------
     def inf_point_eq(e):
         first  = 2.0 * (cs2_minus(e) - 1.0) * cs2_minus(e)
         second = -(e + pminus(e, eTL, p0)) * cs2_minus(e, nu=1)
         return first + second
-
-    from scipy.optimize import least_squares as _ls
-    e_CSP = _ls(inf_point_eq, eTL / 2.0, bounds=(1e-6, eTL)).x[0]
-    print(f"[SiBuGEC] Energy at critical sound point (CSP): {e_CSP:.4f}")
-
-    # Save EoS profiles
-    _save_txt(output_dir, "pofe_minus.txt",
-              np.stack((e_minus if custom_cs2_minus is None else np.linspace(0, eTL * 1.1, 100),
-                        pminus(e_minus if custom_cs2_minus is None else np.linspace(0, eTL * 1.1, 100),
-                               eTL, p0)), axis=1))
-    _save_txt(output_dir, "pofe_plus.txt",
-              np.stack((e_plus if custom_cs2_plus is None else np.linspace(eTH * 0.9, e_max * 5, 100),
-                        pplus(e_plus if custom_cs2_plus is None else np.linspace(eTH * 0.9, e_max * 5, 100),
-                              eTH, p1)), axis=1))
 
     # ------------------------------------------------------------------
     # Optionally show EoS
@@ -202,7 +189,6 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     ax_C     = fig_det.add_subplot(gs[0, 1])
     ax_alpha = fig_det.add_subplot(gs[1, :])
 
-    ax_C.plot(np.sqrt(cs2_minus(e_CSP)), e_CSP, 'xr', markersize=10, label='CSP')
     for ax, xlabel, ylabel in [
         (ax_det,   r'$\xi_w$', r'$\mathcal{E}_N$'),
         (ax_C,     r'$\xi_w$', r'$\mathcal{E}_C$'),
@@ -219,7 +205,7 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         if sminus is None or splus is None:
             return np.nan
         return compute_alphan(eN, pplus, pminus, eTH, eTL, p0, p1,
-                               splus, sminus, n, delta)
+                               splus, sminus, n, delta, tplus=tplus, tminus=tminus)
 
     # ------------------------------------------------------------------
     # Separator curves (parallel)
@@ -535,11 +521,11 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     if saving:
         save_path = os.path.join(
             output_dir,
-            f"sibugec_results_{eTH:.3f}_{eTL:.3f}_{p0:.3f}.pkl",
+            f"snobex_results_{eTH:.3f}_{eTL:.3f}_{p0:.3f}.pkl",
         )
         with open(save_path, 'wb') as f:
             pickle.dump(results_dict, f)
-        print(f"[SiBuGEC] Results saved to '{save_path}'")
+        print(f"[snobex] Results saved to '{save_path}'")
 
     # ------------------------------------------------------------------
     # Click handler
@@ -627,7 +613,7 @@ def _on_click(event, ax_det, ax_C, ax_alpha,
     is_eC_plot    = (event.inaxes == ax_C)
     is_alpha_plot = (event.inaxes == ax_alpha)
     y_name = 'E_N' if is_eN_plot else ('E_C' if is_eC_plot else 'Alpha')
-    print(f"[SiBuGEC] Click at ξ_w={xiw_click:.3f}, {y_name}={ey_click:.3f}")
+    print(f"[snobex] Click at ξ_w={xiw_click:.3f}, {y_name}={ey_click:.3f}")
 
     best_dist = np.inf
     best_sol  = None
@@ -673,7 +659,7 @@ def _on_click(event, ax_det, ax_C, ax_alpha,
         return
 
     xiw_s, eN_s, eC_s, v_f, xi_f, e_f = best_sol[:6]
-    print(f"[SiBuGEC] → {best_type}: ξ_w={xiw_s:.3f}, E_N={eN_s:.3f}, E_C={eC_s:.3f}")
+    print(f"[snobex] → {best_type}: ξ_w={xiw_s:.3f}, E_N={eN_s:.3f}, E_C={eC_s:.3f}")
 
     y_label = 'E_N' if is_eN_plot else ('E_C' if is_eC_plot else 'Alpha')
     y_val   = eN_s  if is_eN_plot else (eC_s if is_eC_plot else alphan_func(eN_s))

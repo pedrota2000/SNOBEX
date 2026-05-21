@@ -1,5 +1,5 @@
 """
-sibugec.eos
+snobex.eos
 ===========
 Equation-of-state (EoS) models for the two-phase fluid.
 
@@ -144,7 +144,7 @@ def load_custom_eos(filepath, delimiter=None, usecols=None):
     --------
     >>> p_func, cs2_func, e_lo, e_hi = load_custom_eos("my_eos.dat")
     >>> # Use as the plus branch
-    >>> from sibugec.eos import pplus
+    >>> from snobex.eos import pplus
     >>> # Replace pplus with p_func in interactive_bubble_plot(...)
     """
     data = np.loadtxt(filepath, delimiter=delimiter, usecols=usecols)
@@ -181,7 +181,7 @@ def load_custom_eos(filepath, delimiter=None, usecols=None):
     e_max = float(e_unique[-1])
 
     print(
-        f"[SiBuGEC] Custom EoS loaded from '{filepath}': "
+        f"[snobex] Custom EoS loaded from '{filepath}': "
         f"{len(e_unique)} points, e ∈ [{e_min:.4g}, {e_max:.4g}]"
     )
     return p_func, cs2_func, e_min, e_max

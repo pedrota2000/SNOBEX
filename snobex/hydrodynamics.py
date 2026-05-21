@@ -1,5 +1,5 @@
 """
-sibugec.hydrodynamics
+snobex.hydrodynamics
 =====================
 Self-similar hydrodynamic flow solvers for cosmological bubble walls.
 
@@ -17,7 +17,10 @@ custom solvers.
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.interpolate import CubicSpline
-from scipy.optimize import fsolve, least_squares
+from scipy.optimize import fsolve, least_squares, brentq
+
+
+_DEF_RESIDUAL_TOL = 1e-4
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +319,9 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
     from .hydrodynamics import _e_max_from_pressure  # lazy local helper
     e_max = _e_max_from_pressure(eTH, eTL, p0, p1, pminus, pplus)
 
+    if not np.isfinite(e_max) or e_max <= eTH:
+        return np.nan, np.nan
+
     if np.sqrt(cs2_minus(em)) < xiw or cs2_minus(em) < 0:
         return np.nan, np.nan
 
@@ -325,7 +331,7 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
                         bounds=([-xiw, eTH], [0, np.inf]))
     vp, ep = sol.x
     res = j_system_plus([vp, ep], vm, em, pplus, pminus, eTH, eTL, p0, p1)
-    if np.any(np.isnan(res)) or np.mean(np.array(res)**2) > 1e-10 or \
+    if np.any(np.isnan(res)) or np.mean(np.array(res)**2) > _DEF_RESIDUAL_TOL or \
             ep < eTH or abs(vp) < 1e-15:
         sol = least_squares(j_system_plus,
                             [-xiw * 0.9, eTH * 1.05],
@@ -333,7 +339,7 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
                             bounds=([-xiw, eTH], [0, np.inf]))
         vp, ep = sol.x
         res = j_system_plus([vp, ep], vm, em, pplus, pminus, eTH, eTL, p0, p1)
-        if np.any(np.isnan(res)) or np.mean(np.array(res)**2) > 1e-10 or \
+        if np.any(np.isnan(res)) or np.mean(np.array(res)**2) > _DEF_RESIDUAL_TOL or \
                 ep < eTH or abs(vp) < 1e-15:
             return np.nan, np.nan
 
@@ -387,7 +393,7 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
                                bounds=([xiw, eTH], [max(xi_f), np.inf]))
         xi_sh, eN = sol_sh.x
         res = j_system_shock([xi_sh, eN], v_spl, e_spl, pplus, eTH, p1)
-        if np.mean(np.array(res)**2) < 1e-10 and xi_sh <= max(xi_f):
+        if np.mean(np.array(res)**2) < _DEF_RESIDUAL_TOL and xi_sh <= max(xi_f):
             xi_out = np.concatenate((np.linspace(0, xiw, 1000),
                                       np.linspace(xiw, xi_sh, 1000),
                                       np.linspace(xi_sh, 1, 1000)))
@@ -571,9 +577,34 @@ def find_hyb(emwall, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
 # ---------------------------------------------------------------------------
 
 def _e_max_from_pressure(eTH, eTL, p0, p1, pminus, pplus):
-    """Return the energy e_max where p−(eTL) = p+(e_max)."""
-    from scipy.optimize import fsolve as _fsolve
+    """Return e where p−(eTL) = p+(e), using finite-domain bracketing."""
+
     target = pminus(eTL, eTL, p0) if p0 is not None else pminus(eTL, eTL)
-    guess = eTL * 2 if eTL > eTH else eTH * 5
-    result = _fsolve(lambda e: target - pplus(e, eTH, p1), guess)[0]
-    return max(result, eTH + 0.2)
+    if not np.isfinite(target):
+        return np.nan
+
+    e_start = max(float(eTH), 1e-10)
+    e_stop = max(float(eTH) * 20.0, float(eTL) * 20.0, float(eTH) + 10.0)
+    e_scan = np.linspace(e_start, e_stop, 2000)
+    p_scan = np.asarray(pplus(e_scan, eTH, p1), dtype=float)
+    finite = np.isfinite(p_scan)
+
+    if not np.any(finite):
+        return np.nan
+
+    ef = e_scan[finite]
+    ff = target - p_scan[finite]
+    sign_change = np.where(np.sign(ff[:-1]) * np.sign(ff[1:]) <= 0)[0]
+
+    if sign_change.size > 0:
+        i = int(sign_change[0])
+        a = float(ef[i])
+        b = float(ef[i + 1])
+        try:
+            root = brentq(lambda e: target - float(pplus(e, eTH, p1)), a, b)
+            return max(float(root), float(eTH) + 1e-9)
+        except Exception:
+            pass
+
+    i_best = int(np.nanargmin(np.abs(ff)))
+    return max(float(ef[i_best]), float(eTH) + 1e-9)

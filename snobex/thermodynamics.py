@@ -1,5 +1,5 @@
 """
-sibugec.thermodynamics
+snobex.thermodynamics
 ======================
 Thermodynamic quantities derived from the equation of state:
 
@@ -82,7 +82,7 @@ def calculate_temperature(e_vals, s_vals):
         return np.array([]), np.array([])
 
     temperature = np.gradient(e_vals, s_vals)
-    valid = (temperature > 0.1) & (temperature < 100) & np.isfinite(temperature)
+    valid = (temperature > 0.0) & np.isfinite(temperature)
     return e_vals[valid], temperature[valid]
 
 
@@ -144,7 +144,7 @@ def find_critical_temperature(t_minus, f_minus, t_plus, f_plus):
         return float(t1 - d1 * (t2 - t1) / (d2 - d1))
 
     except Exception as exc:
-        print(f"[SiBuGEC] Warning in find_critical_temperature: {exc}")
+        print(f"[snobex] Warning in find_critical_temperature: {exc}")
         return None
 
 

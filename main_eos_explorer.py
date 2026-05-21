@@ -1,7 +1,7 @@
 """
 main_eos_explorer.py
 ====================
-SiBuGEC — EoS Explorer (inverse-problem GUI)
+snobex — EoS Explorer (inverse-problem GUI)
 
 Interactive GUI for exploring the equation of state and thermodynamic
 quantities of the two-phase model.  Sliders control the EoS parameters
@@ -32,15 +32,15 @@ from scipy.integrate import solve_ivp
 from scipy.optimize import fsolve
 from scipy.interpolate import interp1d, PchipInterpolator
 
-from sibugec.eos import pplus, pminus, load_custom_eos
-from sibugec.thermodynamics import (
+from snobex.eos import pplus, pminus, load_custom_eos
+from snobex.thermodynamics import (
     entropy_ODE_plus,
     entropy_ODE_minus,
     calculate_temperature,
     find_critical_temperature,
 )
-from sibugec.plotting import interactive_bubble_plot
-from sibugec import print_logo
+from snobex.plotting import interactive_bubble_plot
+from snobex import print_logo
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -95,7 +95,7 @@ if CUSTOM_EOS_FILE is not None:
 # ---------------------------------------------------------------------------
 XIW_RESOLUTION     = 25
 EN_RESOLUTION      = 25
-CONTOUR_RESOLUTION = 250
+CONTOUR_RESOLUTION = 50
 
 # ---------------------------------------------------------------------------
 # Global entropy-interpolant holders (updated by update_plots)

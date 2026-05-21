@@ -1,7 +1,7 @@
 """
 main_bubble_solver.py
 =====================
-SiBuGEC — Standalone Bubble Phase-Space Solver
+snobex — Standalone Bubble Phase-Space Solver
 
 Directly launches the interactive bubble phase-space computation without
 the EoS-explorer GUI.  Useful when EoS parameters are already known.
@@ -13,7 +13,7 @@ Usage
 Configuration
 -------------
 Edit the parameter block below before running.  All parameters are
-documented in ``sibugec.plotting.interactive_bubble_plot``.
+documented in ``snobex.plotting.interactive_bubble_plot``.
 
 Custom EoS
 ----------
@@ -24,8 +24,8 @@ both branches, split at ``CUSTOM_EOS_SPLIT_ENERGY``.  Adjust as needed.
 """
 
 import numpy as np
-from sibugec.plotting import interactive_bubble_plot
-from sibugec.eos import load_custom_eos
+from snobex.plotting import interactive_bubble_plot
+from snobex.eos import load_custom_eos
 
 # ---------------------------------------------------------------------------
 # EoS parameters — analytic parametrisation
@@ -68,7 +68,7 @@ OUTPUT_DIR   = "."     # Directory for output files
 # Main
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    from sibugec import print_logo
+    from snobex import print_logo
     print_logo()
     custom_pplus  = None
     custom_pminus = None
@@ -81,7 +81,7 @@ if __name__ == "__main__":
         split = CUSTOM_EOS_SPLIT_ENERGY if CUSTOM_EOS_SPLIT_ENERGY is not None \
                 else (e_lo + e_hi) / 2.0
 
-        print(f"[SiBuGEC] Custom EoS split at e = {split:.4g}")
+        print(f"[snobex] Custom EoS split at e = {split:.4g}")
         print(f"         e < {split:.4g} → LT branch,  e ≥ {split:.4g} → HT branch")
 
         # Wrap tabulated EoS to match the (e, eT, p_offset) call signature

@@ -1,5 +1,5 @@
 """
-sibugec.separators
+snobex.separators
 ==================
 Phase-space separator and contour finders.
 
@@ -41,7 +41,11 @@ from .hydrodynamics import (
     find_hyb,
     _e_max_from_pressure,
     _find_monotonic_segment,
+    _DEF_RESIDUAL_TOL,
 )
+
+
+_DEF_CS_ROOT_TOL = 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -71,12 +75,18 @@ def compute_def_separator(xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_mi
     -------
     (eC, eN) : (float, float) or (NaN, NaN)
     """
-    sol = least_squares(
-        lambda e: np.sqrt(cs2_minus(e)) - xiw,
-        eTL / 2.0,
-        bounds=(1e-6, eTL),
-    )
-    if abs(np.sqrt(cs2_minus(sol.x)) - xiw) < 1e-6:
+    def _def_cs_residual(e):
+        cs2_val = np.asarray(cs2_minus(e), dtype=float)
+        out = np.empty_like(cs2_val)
+        good = np.isfinite(cs2_val) & (cs2_val >= 0.0)
+        out[good] = np.sqrt(cs2_val[good]) - xiw
+        out[~good] = 1e3 + abs(xiw)
+        return out
+
+    sol = least_squares(_def_cs_residual, eTL / 2.0, bounds=(1e-6, eTL))
+    cs_at_sol = np.asarray(cs2_minus(sol.x), dtype=float)
+    if np.isfinite(cs_at_sol).all() and np.all(cs_at_sol >= 0.0) and \
+            abs(np.sqrt(cs_at_sol) - xiw) < _DEF_CS_ROOT_TOL:
         eN_sol = find_def(sol.x.item() - 1e-3, xiw,
                           pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus)[0]
         eC_val = float(np.array(sol.x).item())
@@ -102,7 +112,7 @@ def compute_det_separator(eN, pplus, pminus, eTH, eTL, p0, p1,
     )
     vm, vp = sol.x
     res = j_system_det_contour(sol.x, eN, eTL, pplus, pminus, eTH, eTL, p0, p1)
-    if np.mean(np.array(res)**2) < 1e-10:
+    if np.mean(np.array(res)**2) < _DEF_RESIDUAL_TOL:
         eC_sol = find_deto(eN, -vp.item(), pplus, pminus, eTH, eTL, p0, p1,
                            cs2_plus, cs2_minus, em=eTL, vm=vm)[0]
         return float(-vp.item()), float(np.array(eC_sol).item() if np.ndim(eC_sol) > 0 else eC_sol)
@@ -297,7 +307,8 @@ def compute_entropy_separator_def(xiw, pplus, pminus, eTH, eTL, p0, p1,
 # alpha_N
 # ---------------------------------------------------------------------------
 
-def compute_alphan(eN, pplus, pminus, eTH, eTL, p0, p1, splus, sminus, n, delta):
+def compute_alphan(eN, pplus, pminus, eTH, eTL, p0, p1, splus, sminus, n, delta,
+                   tplus=None, tminus=None):
     """
     Convert nucleation energy ``eN`` to the strength parameter α_N.
 
@@ -313,19 +324,45 @@ def compute_alphan(eN, pplus, pminus, eTH, eTL, p0, p1, splus, sminus, n, delta)
     if np.isnan(eN_val):
         return np.nan
 
-    Tn = 1.0 / splus.derivative()(eN_val)
+    if tplus is not None and tminus is not None:
+        Tn = float(tplus(eN_val))
+        if not np.isfinite(Tn) or Tn <= 0.0:
+            return np.nan
+    else:
+        Tn = 1.0 / splus.derivative()(eN_val)
     eh = eN_val
     ph = pplus(eh, eTH, p1, delta=delta)
     theta_h = 0.25 * (eh - 3.0 * ph)
 
-    sol = least_squares(
-        lambda e: sminus.derivative()(e) - 1.0 / Tn,
-        eTL / 2.0,
-        bounds=(1e-6, eTL),
-    )
-    el = sol.x[0]
-    if (sminus.derivative()(el) - 1.0 / Tn)**2 > 1e-10 or el > eTL:
-        return np.nan
+    if tminus is not None:
+        residual = lambda e: float(tminus(e) - Tn)
+        e_lo = max(float(tminus.x[0]), 1e-8)
+        e_hi = min(float(tminus.x[-1]), eTL)
+        e_scan = np.linspace(e_lo, e_hi, 256)
+        r_scan = np.array([residual(e) for e in e_scan], dtype=float)
+        finite = np.isfinite(r_scan)
+        e_scan = e_scan[finite]
+        r_scan = r_scan[finite]
+        if len(e_scan) < 2:
+            return np.nan
+        zero_idx = np.where(np.abs(r_scan) < 1e-8)[0]
+        if len(zero_idx) > 0:
+            el = float(e_scan[zero_idx[0]])
+        else:
+            sign_changes = np.where(np.diff(np.sign(r_scan)) != 0)[0]
+            if len(sign_changes) == 0:
+                return np.nan
+            idx = int(sign_changes[0])
+            el = brentq(residual, float(e_scan[idx]), float(e_scan[idx + 1]))
+    else:
+        sol = least_squares(
+            lambda e: sminus.derivative()(e) - 1.0 / Tn,
+            eTL / 2.0,
+            bounds=(1e-6, eTL),
+        )
+        el = sol.x[0]
+        if (sminus.derivative()(el) - 1.0 / Tn)**2 > 1e-10 or el > eTL:
+            return np.nan
 
     pl = pminus(el, eTL, n=n)
     theta_l = 0.25 * (el - 3.0 * pl)
