@@ -1,7 +1,9 @@
+# Ignore VS Code settings folder
+.vscode/
 *.txt
 *.pkl
 __pycache__/
 *.py[cod]
 *$py.class
-*.vscode/
+*.vscode
 *.ipynb_checkpoints/
