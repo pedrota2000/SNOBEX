@@ -21,7 +21,8 @@ from scipy.interpolate import CubicSpline
 
 from .eos import pplus as _pplus_analytic, pminus as _pminus_analytic
 from .hydrodynamics import (
-    system_minus, find_deto, find_def, find_hyb, _e_max_from_pressure
+    find_shocked_detonation, system_minus, find_deto, find_def, find_hyb,
+    _e_max_from_pressure
 )
 from .separators import (
     compute_def_separator,
@@ -41,7 +42,8 @@ from .separators import (
 def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energies_allowed,
                           p0=0.0, p1=0.0, xiw_resolution=25, en_resolution=50,
                           contour_resolution=500, show_eos=True,
-                          sminus=None, splus=None, tminus=None, tplus=None, n=4.0, delta=1.0,
+                          sminus=None, splus=None, tminus=None, tplus=None,cs2plus = 1/3,cs2minus = 1/3,
+                          n=4.0, delta=1.0,
                           sTL=None, sTH=None, saving=False, load_eos=None,
                           custom_pplus=None, custom_pminus=None,
                           custom_cs2_plus=None, custom_cs2_minus=None,
@@ -123,14 +125,14 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     if custom_pplus is not None:
         pplus  = custom_pplus
     else:
-        def pplus(e, eHT, p1_arg=p1, delta=delta):
-            return _pplus_analytic(e, eHT, p1_arg, delta)
+        def pplus(e, eHT, p1_arg=p1, delta=delta, cs2plus=cs2plus):
+            return _pplus_analytic(e, eHT, p1_arg, delta, cs2plus)
 
     if custom_pminus is not None:
         pminus = custom_pminus
     else:
-        def pminus(e, eTL_arg, p0_arg=p0, n=n):
-            return _pminus_analytic(e, eTL_arg, n)
+        def pminus(e, eTL_arg, p0_arg=p0, n=n, cs2minus=cs2minus):
+            return _pminus_analytic(e, eTL_arg, n, cs2minus)
 
     # ------------------------------------------------------------------
     # Energy scale
@@ -269,7 +271,7 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
 
     # Limiting detonation contour
     fig_det.suptitle("Computing limiting detonations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
-    xiw_v2 = np.linspace(0.3, 1 - 1e-3, int(contour_resolution // 2.5))
+    xiw_v2 = np.linspace(0.3, 1 - 1e-2, int(contour_resolution))
     with concurrent.futures.ThreadPoolExecutor() as ex:
         results = list(ex.map(
             lambda xiw: limiting_detonation_contour_finder(
@@ -351,16 +353,19 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     ax_bar_det = fig_det.add_axes([0.15, by, 0.7, bh])
     ax_bar_def = fig_det.add_axes([0.15, by - (bh + bs), 0.7, bh])
     ax_bar_hyb = fig_det.add_axes([0.15, by - 2 * (bh + bs), 0.7, bh])
-    for axb in (ax_bar_det, ax_bar_def, ax_bar_hyb):
+    ax_bar_sds = fig_det.add_axes([0.15, by - 3 * (bh + bs), 0.7, bh])
+    for axb in (ax_bar_det, ax_bar_def, ax_bar_hyb, ax_bar_sds):
         axb.set_xticks([]);  axb.set_yticks([])
         axb.set_xlim(0, 1);  axb.set_ylim(0, 1)
     det_rect = ax_bar_det.barh([0.5], [0], height=1.0, color='red')[0]
     def_rect = ax_bar_def.barh([0.5], [0], height=1.0, color='blue')[0]
     hyb_rect = ax_bar_hyb.barh([0.5], [0], height=1.0, color='green')[0]
+    sds_rect = ax_bar_sds.barh([0.5], [0], height=1.0, color='purple')[0]
     for axb, rect, label in [
         (ax_bar_det, det_rect, "Detonations"),
         (ax_bar_def, def_rect, "Deflagrations"),
         (ax_bar_hyb, hyb_rect, "Hybrids"),
+        (ax_bar_sds, sds_rect, "Shocked det."),
     ]:
         axb.text(-0.02, 0.5, label, va='center', ha='right', fontsize=8,
                  transform=axb.transAxes)
@@ -376,6 +381,7 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     det_pct = _pct_text(ax_bar_det, "Detonations")
     def_pct = _pct_text(ax_bar_def, "Deflagrations")
     hyb_pct = _pct_text(ax_bar_hyb, "Hybrids")
+    sds_pct = _pct_text(ax_bar_sds, "Shocked det.")
 
     def _update_bar(rect, pct_text, frac, ax, total, done):
         rect.set_width(frac)
@@ -405,13 +411,20 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         eN, flow, emwall = find_hyb(em, xiw, pplus, pminus, eTH, eTL, p0, p1,
                                      cs2_plus, cs2_minus)
         return xiw, eN, flow, emwall
+    
+    def _shocked_det_worker(args):
+        xiw, eN = args
+        result = find_shocked_detonation(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
+                                         cs2_plus, cs2_minus)
+        return xiw, eN, result
 
     # ------------------------------------------------------------------
     # Compute flows
     # ------------------------------------------------------------------
-    detonation_flows   = []
-    deflagration_flows = []
-    hybrid_flows       = []
+    detonation_flows        = []
+    deflagration_flows      = []
+    hybrid_flows            = []
+    shocked_detonation_flows = []
 
     # Detonations
     XIW, E = np.meshgrid(xiw_vals, nucleation_energies, indexing='ij')
@@ -459,8 +472,34 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     _batch_plot(ax_det, ax_C, ax_alpha, hybrid_flows, 'go', 'Hybrids', 3, _alphan)
     results_dict['Hydro_flows']['hybrid'] = _pack_flows(hybrid_flows, _alphan)
 
+    # Shocked detonations (exist only for fast walls → narrower ξ_w range).
+    # A single (ξ_w, E_N) may yield several candidate shock positions, so each
+    # worker returns parallel lists.  Plotting/packing is deferred until after
+    # the entropy check, which decides which candidates survive.
+    xiw_sds = np.linspace(0.6, 0.99, xiw_resolution)
+    en_sds  = np.linspace(nucleation_energies[0], nucleation_energies[-1], en_resolution)
+    XIW, E = np.meshgrid(xiw_sds, en_sds, indexing='ij')
+    tasks = [(XIW[i, j], E[i, j]) for i in range(XIW.shape[0]) for j in range(XIW.shape[1])]
+    total = len(tasks);  done = 0
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        for xiw, eN, result in ex.map(_shocked_det_worker, tasks):
+            done += 1
+            _update_bar(sds_rect, sds_pct, done / total, ax_bar_sds, total, done)
+            if not isinstance(result, tuple) or len(result) != 5:
+                continue
+            eC_list_r, eN_list_r, xiw_list_r, flow_list_r, xish_list_r = result
+            for eC_r, eN_r, xiw_r, flow_r, xish_r in zip(
+                    eC_list_r, eN_list_r, xiw_list_r, flow_list_r, xish_list_r):
+                if xiw_r is None or np.isnan(eC_r) or np.isnan(eN_r) or np.isnan(xiw_r):
+                    continue
+                v_f, xi_f, e_f = flow_r
+                if np.isnan(v_f).any():
+                    continue
+                shocked_detonation_flows.append(
+                    (xiw_r, eN_r, eC_r, v_f, xi_f, e_f, xish_r))
+
     # Remove progress bars
-    ax_bar_det.remove();  ax_bar_def.remove();  ax_bar_hyb.remove()
+    ax_bar_det.remove();  ax_bar_def.remove();  ax_bar_hyb.remove(); ax_bar_sds.remove()
 
     # ------------------------------------------------------------------
     # Allowed-energy contours
@@ -490,8 +529,17 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     # ------------------------------------------------------------------
     if sminus is not None and splus is not None:
         (bad_det, bad_def, bad_def_sh,
-         bad_hyb, bad_hyb_sh) = entropy_checker(
-            detonation_flows, deflagration_flows, hybrid_flows, splus, sminus)
+         bad_hyb, bad_hyb_sh,
+         bad_dsd, bad_dsd_sh) = entropy_checker(
+            detonation_flows, deflagration_flows, hybrid_flows,
+            shocked_detonation_flows, splus, sminus)
+
+        # Keep only shocked detonations whose shock satisfies the entropy
+        # condition (ΔJ_s ≥ −1e-4, i.e. non-decreasing up to tolerance).
+        if len(bad_dsd_sh) == len(shocked_detonation_flows) and len(bad_dsd_sh) > 0:
+            keep = np.asarray(bad_dsd_sh) >= -1.0 / 1e4
+            shocked_detonation_flows = [
+                r for r, k in zip(shocked_detonation_flows, keep) if k]
 
         # _entropy_overlay(ax_det, ax_C, ax_alpha, detonation_flows,
         #                  bad_det,    'k*', 2.5, _alphan)
@@ -503,6 +551,14 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         #                  bad_hyb_sh, 'yd', 2.5, _alphan)
         # _entropy_overlay(ax_det, ax_C, ax_alpha, hybrid_flows,
         #                  bad_hyb,    'k*', 2.5, _alphan)
+
+    # Plot and record the (entropy-filtered) shocked detonations
+    _batch_plot(ax_det, ax_C, ax_alpha, shocked_detonation_flows,
+                'm^', 'Shocked det.', 4, _alphan)
+    results_dict['Hydro_flows']['shocked_detonation'] = {
+        **_pack_flows(shocked_detonation_flows, _alphan),
+        'xish': np.array([r[6] for r in shocked_detonation_flows]),
+    }
 
     # ------------------------------------------------------------------
     # Final plot decoration
@@ -534,6 +590,7 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         'button_press_event',
         lambda ev: _on_click(ev, ax_det, ax_C, ax_alpha,
                              detonation_flows, deflagration_flows, hybrid_flows,
+                             shocked_detonation_flows,
                              output_dir, _alphan),
     )
 
@@ -600,7 +657,7 @@ def _entropy_overlay(ax_det, ax_C, ax_alpha, flows, bad_arr, marker, ms, alphan_
 
 
 def _on_click(event, ax_det, ax_C, ax_alpha,
-              detonation_data, deflagration_data, hybrid_data,
+              detonation_data, deflagration_data, hybrid_data, shocked_data,
               output_dir, alphan_func):
     if event.inaxes not in (ax_det, ax_C, ax_alpha):
         return
@@ -654,6 +711,18 @@ def _on_click(event, ax_det, ax_C, ax_alpha,
         d = np.hypot(xiw - xiw_click, ey - ey_click)
         if d < best_dist:
             best_dist = d;  best_sol = row;  best_type = 'Hybrid'
+
+    for row in shocked_data:
+        xiw, eN, eC = row[0], row[1], row[2]
+        if is_eN_plot:
+            ey = eN
+        elif is_eC_plot:
+            ey = eC
+        else:
+            ey = alphan_func(eN)
+        d = np.hypot(xiw - xiw_click, ey - ey_click)
+        if d < best_dist:
+            best_dist = d;  best_sol = row;  best_type = 'Shocked det.'
 
     if best_sol is None:
         return

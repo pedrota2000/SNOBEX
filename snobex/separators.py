@@ -155,14 +155,18 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
     -------
     (xi_sh, eN, eC) : each float or NaN
     """
+
     if np.ndim(xiw) > 0:
         xiw = xiw.item()
+
 
     sol_infl = least_squares(inf_point_eq, eTL / 2.0, bounds=(1e-6, eTL))
     emwall = sol_infl.x[0]
     cs2_wall = cs2_minus(emwall)
     if cs2_wall < 0:
+        print(f"[DEBUG] cs2_wall < 0, returning NaN (xiw={xiw})")
         return np.nan, np.nan, np.nan
+
 
     v_init = (xiw - np.sqrt(cs2_wall)) / (1.0 + xiw * (-np.sqrt(cs2_wall)))
     if v_init < 0:
@@ -174,12 +178,16 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
         cs2_wall = cs2_minus(emwall)
         v_init = (xiw - np.sqrt(cs2_wall)) / (1.0 + xiw * (-np.sqrt(cs2_wall)))
         if cs2_minus(sol_infl.x[0]) < xiw**2:
+            print(f"[DEBUG] cs2_minus(sol_infl.x[0]) < xiw**2, returning NaN (xiw={xiw})")
             return np.nan, np.nan, np.nan
 
+
     if abs(v_init) < 1e-10:
+        print(f"[DEBUG] abs(v_init) < 1e-10, returning NaN (xiw={xiw})")
         return np.nan, np.nan, np.nan
 
     init_point = [v_init, xiw, emwall]
+
     flow_bw = solve_ivp(system_minus, (0, -100), init_point,
                         t_eval=np.linspace(0, -100, 1000),
                         args=(pminus, cs2_minus, eTL, p0),
@@ -193,19 +201,26 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
     xi_flow = np.concatenate((np.flip(flow_bw.y[1]), flow_fw.y[1]))
     e_flow  = np.concatenate((np.flip(flow_bw.y[2]), flow_fw.y[2]))
 
+
     breaks = np.where(np.diff(xi_flow) < 0)[0]
     if len(breaks) > 0:
         last = breaks[0]
         if abs(v_flow[last]) > 1e-6:
+            print(f"[DEBUG] abs(v_flow[last]) > 1e-6, returning NaN (xiw={xiw})")
             return np.nan, np.nan, np.nan
 
     xi_u, idx_u = np.unique(xi_flow, return_index=True)
     v_u = v_flow[idx_u];  e_u = e_flow[idx_u]
     sel = xi_u <= 1.0
+    # Return nans if there are only 1 element in the lists #
+    if np.sum(sel) < 2:
+        print(f"[DEBUG] Not enough points in sel (np.sum(sel)={np.sum(sel)}), returning NaN (xiw={xiw})")
+        return np.nan, np.nan, np.nan
     v_int = CubicSpline(xi_u[sel], v_u[sel])
     e_int = CubicSpline(xi_u[sel], e_u[sel])
 
-    for xi_cur in np.flip(np.linspace(xiw, 1.0, 50)):
+
+    for xi_cur in np.flip(np.linspace(xiw, 1.0, 500)):
         if xi_cur <= xiw or xi_cur > max(xi_u) or e_int(xi_cur) < eTH:
             continue
         sol = least_squares(
@@ -216,10 +231,12 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
         )
         xi_sh, eN = sol.x
         res = j_system_shock_dets(sol.x, v_int, e_int, pplus, pminus, eTH, eTL, p0, p1)
+        #print(f"xiw: {xiw}, Res: {res}, xi_sh: {xi_sh}, eN: {eN}, e_int(xi_sh): {e_int(xi_sh)}, eTH: {eTH}")
         if (np.mean(np.array(res)**2) < 1e-12 and xi_sh > xiw
                 and xi_sh <= max(xi_u) and eN >= eTH and xi_sh <= 1 - 2e-5):
             return float(xi_sh), float(eN), float(min(e_u))
 
+    #print(f"[DEBUG] No valid contour found, returning NaN (xiw={xiw})")
     return np.nan, np.nan, np.nan
 
 
@@ -573,7 +590,7 @@ def eC_contour_finder(xiw_list, eN_list, detonation_data, deflagration_data,
 # ---------------------------------------------------------------------------
 
 def entropy_checker(detonation_data, deflagration_data, hybrid_data,
-                    splus, sminus):
+                    dsd_data, splus, sminus):
     """
     Verify the entropy condition ΔJ_s ≥ 0 at each discontinuity.
 
@@ -583,6 +600,8 @@ def entropy_checker(detonation_data, deflagration_data, hybrid_data,
     - deflagration shocks
     - hybrid walls
     - hybrid shocks
+    - shocked-detonation walls
+    - shocked-detonation shocks
 
     Negative values indicate entropy violation.
     """
@@ -596,6 +615,8 @@ def entropy_checker(detonation_data, deflagration_data, hybrid_data,
     entropy_def_sh  = []
     entropy_hyb     = []
     entropy_hyb_sh  = []
+    entropy_dsd     = []
+    entropy_dsd_sh  = []
 
     for xiw, eN, eC, v_flow, xi_flow, e_flow in detonation_data:
         pos = np.where(xi_flow == xiw)[0]
@@ -662,8 +683,32 @@ def entropy_checker(detonation_data, deflagration_data, hybrid_data,
         Jp = vp * gp * splus(e_flow[i])
         entropy_hyb_sh.append(Jp - Jm)
 
+    # Shocked-detonation shocks (same-phase LT shock, both sides use S−)
+    for xiw, eN, eC, v_flow, xi_flow, e_flow, xish in dsd_data:
+        pos = np.where(xi_flow == xish)[0]
+        if len(pos) == 0 or pos[0] + 1 >= len(xi_flow):
+            entropy_dsd_sh.append(np.nan);  continue
+        i = pos[0]
+        Jm = _currents(v_flow[i],   xi_flow[i],   e_flow[i],   sminus)
+        Jp = _currents(v_flow[i+1], xi_flow[i+1], e_flow[i+1], sminus)
+        entropy_dsd_sh.append(Jp - Jm)
+
+    # Shocked-detonation walls (S− behind, S+ ahead)
+    for xiw, eN, eC, v_flow, xi_flow, e_flow, xish in dsd_data:
+        pos = np.where(e_flow == eN)[0]
+        if len(pos) == 0 or pos[0] == 0:
+            entropy_dsd.append(np.nan);  continue
+        i = pos[0]
+        Jm = _currents(v_flow[i-1], xi_flow[i-1], e_flow[i-1], sminus)
+        vp = -xi_flow[i]
+        gp = 1.0 / np.sqrt(1.0 - vp**2)
+        Jp = vp * gp * splus(e_flow[i])
+        entropy_dsd.append(Jp - Jm)
+
     return (np.array(entropy_det),
             np.array(entropy_def),
             np.array(entropy_def_sh),
             np.array(entropy_hyb),
-            np.array(entropy_hyb_sh))
+            np.array(entropy_hyb_sh),
+            np.array(entropy_dsd),
+            np.array(entropy_dsd_sh))

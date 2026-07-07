@@ -9,15 +9,18 @@
 </p>
 
 snobex (Self-similar Non-conformal Obstructions to Bubble expansion) computes self-similar hydrodynamic bubble solutions
-(detonations, deflagrations, and hybrids) for cosmological first-order
+(detonations, deflagrations, hybrids, and shocked detonations) for cosmological first-order
 phase transitions, for a general equation of state.
 
 ---
 
 ## Features
 
-- Interactive EoS explorer with real-time thermodynamic plots (GUI).
-- Full phase-space computation: detonations, deflagrations, and hybrids.
+- Interactive EoS explorer with real-time thermodynamic plots (GUI),
+  including the critical-temperature common-tangent construction on the
+  entropy–energy panel.
+- Full phase-space computation: detonations, deflagrations, hybrids, and
+  shocked detonations.
 - Automatic separator curves for different type of solutions.
 - Click-to-inspect: click any point in the phase-space plot to display
   the corresponding velocity and energy profiles.
@@ -26,6 +29,17 @@ phase transitions, for a general equation of state.
   file and replace the analytic parametrisations entirely. **WORK IN PROGRESS**
 - Parallel computation via `concurrent.futures`.
 - Optional result pickling for post-processing.
+
+---
+
+## Solution types
+
+- **Detonation** — supersonic wall with a rarefaction behind it.
+- **Deflagration** — subsonic wall with a shock ahead of it.
+- **Hybrid** — detonation wall preceded by a rarefaction in the LT phase.
+- **Shocked detonation** — detonation whose rarefaction is terminated by an
+  additional shock inside the LT fluid (two discontinuities). Only the
+  candidates that satisfy the entropy condition at the shock are retained.
 
 ---
 

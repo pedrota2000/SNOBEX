@@ -3,11 +3,13 @@ snobex.hydrodynamics
 =====================
 Self-similar hydrodynamic flow solvers for cosmological bubble walls.
 
-Three solution types are supported:
+Four solution types are supported:
 
 * **Detonation** – supersonic wall, rarefaction behind the wall.
 * **Deflagration** – subsonic wall, shock in front of the wall.
 * **Hybrid** – detonation wall with a preceding rarefaction region.
+* **Shocked detonation** – detonation whose rarefaction is terminated by an
+  additional shock inside the LT fluid (two discontinuities).
 
 The module also exports the relativistic fluid ODE ``system_minus``
 and all junction-condition residuals so that callers can construct
@@ -103,6 +105,29 @@ def j_system_shock_dets(xien, v_inter, e_inter, pplus, pminus, eHT, eLT, p0, p1)
     em = e_inter(xi)
     vm = (v_inter(xi) - xi) / (1.0 - v_inter(xi) * xi)
     vp = -xi
+    val = _jc_residual(vp, vm, ep, em, pplus(ep, eHT, p1), pminus(em, eLT, p0))
+    return np.where(np.isnan(val), 1e2, val)
+
+
+def j_system_shock_weird_det(vmem, xi_sh, v_inter, e_inter, pplus, pminus,
+                             eHT, eLT, p0, p1):
+    """Shock junction for a shocked detonation, solving for (vm, em) at a
+    fixed shock position ``xi_sh``.  The plus state is read from the flow."""
+    vm, em = vmem
+    ep = e_inter(xi_sh)
+    vp = (v_inter(xi_sh) - xi_sh) / (1.0 - v_inter(xi_sh) * xi_sh)
+    val = _jc_residual(vp, vm, ep, em, pplus(ep, eHT, p1), pminus(em, eLT, p0))
+    return np.where(np.isnan(val), 1e2, val)
+
+
+def j_system_shock_weird_det_rest(xishem, v_inter, e_inter, pplus, pminus,
+                                  eHT, eLT, p0, p1):
+    """Shock junction for a shocked detonation that jumps directly to a state
+    at rest, solving for (xi_sh, em) with vm = −xi_sh."""
+    xish, em = xishem
+    ep = e_inter(xish)
+    vp = (v_inter(xish) - xish) / (1.0 - v_inter(xish) * xish)
+    vm = -xish
     val = _jc_residual(vp, vm, ep, em, pplus(ep, eHT, p1), pminus(em, eLT, p0))
     return np.where(np.isnan(val), 1e2, val)
 
@@ -570,6 +595,230 @@ def find_hyb(emwall, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
             return eN, [v_out, xi_out, e_out_], emwall
 
     return np.nan, np.nan, np.nan
+
+
+def find_shocked_detonation(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
+                            cs2_plus, cs2_minus):
+    """
+    Compute the shocked-detonation solution(s) located between the wall
+    obstruction and the flow obstruction, for a given nucleation energy
+    ``eN`` and wall velocity ``xiw``.
+
+    Pipeline
+    --------
+    1. Fix (eN, xiw); use the junction condition to find the LT state just
+       behind the wall.
+    2. Integrate the flow until it becomes multivalued; keep the injective
+       piece.
+    3. Look for a shock along that piece satisfying the junction condition.
+       Two outcomes are possible:
+         - the shock jumps directly to a state at rest, or
+         - the shock jumps to a moving state, after which a rarefaction is
+           integrated down to v = 0.
+
+    Because several shock positions may satisfy the conditions, the result is
+    returned as five parallel lists (one entry per candidate solution).
+
+    Returns
+    -------
+    eC_list, eN_list, xiw_list, flow_list, xish_list : list
+        ``flow_list`` entries are ``[v(xi), xi, e(xi)]``; ``xish_list`` holds
+        the shock position.  Failed cases contribute NaN placeholders.
+    """
+    eC_list, eN_list, xiw_list, flow_list, xish_list = [], [], [], [], []
+
+    def _fail():
+        eC_list.append(np.nan)
+        eN_list.append(np.nan)
+        xiw_list.append(np.nan)
+        flow_list.append([np.nan, np.nan, np.nan])
+        xish_list.append(np.nan)
+        return eC_list, eN_list, xiw_list, flow_list, xish_list
+
+    if np.ndim(eN) > 0:
+        eN = eN.item()
+
+    if xiw < np.sqrt(np.maximum(0, cs2_plus(eN))):
+        return _fail()
+
+    # ------------------------------------------------------------------
+    # (1) LT state just behind the wall
+    # ------------------------------------------------------------------
+    vp = -xiw
+    guesses = [(-0.9, eTL * 0.2), (-0.5 * xiw, eTL * 0.5)]
+    sol_m = None
+    res = None
+    for guess in guesses:
+        try:
+            sol = least_squares(j_system_minus, guess,
+                                args=(vp, eN, pplus, pminus, eTH, eTL, p0, p1),
+                                bounds=([-1, 0.0], [0, eTL]),
+                                ftol=1e-12, xtol=1e-12)
+        except Exception:
+            continue
+        res_tmp = j_system_minus(sol.x, vp, eN, pplus, pminus, eTH, eTL, p0, p1)
+        if (not np.any(np.isnan(res_tmp))) and np.mean(np.array(res_tmp)**2) < 1e-8:
+            sol_m = sol.x
+            res = res_tmp
+            break
+        sol_m = sol.x
+        res = res_tmp
+
+    if sol_m is None or np.isnan(sol_m).any() or np.mean(np.array(res)**2) > 1e-10:
+        return _fail()
+
+    vm, em = sol_m
+    init_point = [(vm + xiw) / (1.0 + xiw * vm), xiw, em]
+
+    # ------------------------------------------------------------------
+    # (2) Integrate the LT flow and keep the injective piece
+    # ------------------------------------------------------------------
+    t_bw = np.linspace(0, -50, 5000)
+    flow_bw = solve_ivp(system_minus, (t_bw[0], t_bw[-1]), init_point,
+                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0))
+    v_flow, xi_flow, e_flow = flow_bw.y
+
+    t_fw = np.linspace(0, 2, 5000)
+    flow_fw = solve_ivp(system_minus, (t_fw[0], t_fw[-1]), init_point,
+                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0))
+
+    v_flow = np.concatenate((np.flip(v_flow), flow_fw.y[0]))
+    xi_flow = np.concatenate((np.flip(xi_flow), flow_fw.y[1]))
+    e_flow = np.concatenate((np.flip(e_flow), flow_fw.y[2]))
+
+    v_flow = np.flip(v_flow[e_flow <= init_point[2]])
+    xi_flow = np.flip(xi_flow[e_flow <= init_point[2]])
+    e_flow = np.flip(e_flow[e_flow <= init_point[2]])
+
+    if np.any(xi_flow > init_point[1]):
+        return _fail()
+
+    diff_xi = np.diff(xi_flow)
+    breaks = np.where(diff_xi > 0)[0]
+    if len(breaks) > 0:
+        last_break = breaks[0]
+        if np.abs(v_flow[last_break]) < 2e-6:
+            return _fail()
+        xi_flow = xi_flow[:last_break + 1]
+        v_flow = v_flow[:last_break + 1]
+        e_flow = e_flow[:last_break + 1]
+
+    if len(xi_flow) <= 1:
+        return _fail()
+
+    # xi_flow is decreasing [xiw → xi_min]; flip to increasing for CubicSpline
+    xi_flow = xi_flow[::-1]
+    v_flow = v_flow[::-1]
+    e_flow = e_flow[::-1]
+
+    unique_xi_flow, unique_indices = np.unique(xi_flow, return_index=True)
+    xi_flow = unique_xi_flow
+    v_flow = v_flow[unique_indices]
+    e_flow = e_flow[unique_indices]
+
+    e_interp = CubicSpline(xi_flow, e_flow, extrapolate=False)
+    v_interp = CubicSpline(xi_flow, v_flow, extrapolate=False)
+
+    # ------------------------------------------------------------------
+    # (3a) Try a shock that jumps directly to a state at rest
+    # ------------------------------------------------------------------
+    x_in_list = np.linspace(xi_flow[0] + 1e-16, xi_flow[-1] - 1e-16, 500)
+
+    sol = least_squares(j_system_shock_weird_det_rest,
+                        (np.mean(x_in_list), eTL / 2),
+                        args=(v_interp, e_interp, pminus, pminus, eTL, eTL, p0, p0),
+                        bounds=((x_in_list[0], 0), (x_in_list[-1], eTL)))
+    xish, eC = sol.x
+    res = np.array(sol.fun)
+    if np.mean(res**2) < 1e-10 and eC < eTL and \
+            xish >= x_in_list[0] and xish < x_in_list[-1]:
+        xi_inner = np.linspace(0, xish, 3000)
+        xi_rare = np.linspace(xish, xi_flow[-1], 3000)
+        xi_outer = np.linspace(xi_flow[-1], 1, 3000)
+
+        xi_flow_out = np.concatenate((xi_inner, xi_rare, xi_outer))
+        v_flow_out = np.concatenate((
+            np.zeros(3000),
+            v_interp(xi_rare),
+            np.zeros(3000),
+        ))
+        e_flow_out = np.concatenate((
+            eC * np.ones(3000),
+            e_interp(xi_rare),
+            eN * np.ones(3000),
+        ))
+        xiw_list.append(xiw)
+        eN_list.append(eN)
+        eC_list.append(eC)
+        flow_list.append((v_flow_out, xi_flow_out, e_flow_out))
+        xish_list.append(xish)
+        return eC_list, eN_list, xiw_list, flow_list, xish_list
+
+    # ------------------------------------------------------------------
+    # (3b) Otherwise, scan shock positions that jump to a moving state,
+    #      then integrate a rarefaction down to rest
+    # ------------------------------------------------------------------
+    for xi_in in x_in_list:
+        ep = e_interp(xi_in)
+        vp = (v_interp(xi_in) - xi_in) / (1.0 - xi_in * v_interp(xi_in))
+        if np.isnan(ep) or np.isnan(vp) or ep <= 0 or vp >= 0 or vp <= -1:
+            eC_list.append(np.nan)
+            eN_list.append(np.nan)
+            xiw_list.append(np.nan)
+            flow_list.append([np.nan, np.nan, np.nan])
+            xish_list.append(np.nan)
+            continue
+        sol = least_squares(j_system_shock_weird_det,
+                            ((-1 + vp) / 2, ep / 2),
+                            args=(xi_in, v_interp, e_interp, pminus, pminus,
+                                  eTL, eTL, p0, p0),
+                            bounds=((-1, 0), (vp, ep)))
+        vm, em = sol.x
+        res = np.array(sol.fun)
+        v = (vm + xi_in) / (1.0 + vm * xi_in)
+        if np.mean(res**2) > 1e-10 or v < -1e-6 or abs(ep - em) < 1e-2:
+            eC_list.append(np.nan)
+            eN_list.append(np.nan)
+            xiw_list.append(np.nan)
+            flow_list.append([np.nan, np.nan, np.nan])
+            xish_list.append(np.nan)
+            continue
+
+        # Integrate the rarefaction that brings the flow back to rest
+        init_point = [(vm + xi_in) / (1.0 + vm * xi_in), xi_in, em]
+        t_bw = np.linspace(0, -100, 50000)
+        flow_backward = solve_ivp(system_minus, (t_bw[0], t_bw[-1]),
+                                  init_point, t_eval=t_bw,
+                                  args=(pminus, cs2_minus, eTL, p0),
+                                  method='RK45', rtol=1e-8, atol=1e-10)
+        v_backward, xi_backward, e_backward = flow_backward.y
+
+        xi_backward = np.concatenate((
+            np.linspace(0, xi_backward[-1], 3000),
+            np.flip(xi_backward),
+            xi_flow[xi_flow >= xi_in],
+            np.linspace(xi_flow[xi_flow >= xi_in][-1], 1, 3000),
+        ))
+        v_backward = np.concatenate((
+            np.zeros(3000),
+            np.flip(v_backward),
+            v_flow[xi_flow >= xi_in],
+            np.zeros(3000),
+        ))
+        e_backward = np.concatenate((
+            e_backward[-1] * np.ones(3000),
+            np.flip(e_backward),
+            e_flow[xi_flow >= xi_in],
+            eN * np.ones(3000),
+        ))
+
+        xish_list.append(xi_in)
+        xiw_list.append(xiw)
+        eN_list.append(eN)
+        eC_list.append(e_backward[0])
+        flow_list.append((v_backward, xi_backward, e_backward))
+
+    return eC_list, eN_list, xiw_list, flow_list, xish_list
 
 
 # ---------------------------------------------------------------------------

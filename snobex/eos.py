@@ -21,13 +21,13 @@ from scipy.interpolate import CubicSpline, interp1d
 # Analytic EoS parametrisations
 # ---------------------------------------------------------------------------
 
-def pplus(e, eHT, p1, delta=10.0):
+def pplus(e, eHT, p1, delta=10.0, cs2plus=1.0/3.0):
     """
     High-temperature pressure branch p+(e).
 
     Constructed so that:
       - p'(eHT) = 0  (pressure minimum at eHT)
-      - p'(e)  → 1/3 as e → ∞  (conformal limit)
+            - p'(e)  → cs2plus as e → ∞  (conformal limit)
       - p(eHT) = p1
 
     Parameters
@@ -36,6 +36,7 @@ def pplus(e, eHT, p1, delta=10.0):
     eHT   : float       Energy at the HT turning point.
     p1    : float       Pressure value at eHT.
     delta : float       Smoothing scale (default 10).
+        cs2plus : float     Speed of sound squared in the conformal limit (default 1/3).
 
     Returns
     -------
@@ -43,20 +44,20 @@ def pplus(e, eHT, p1, delta=10.0):
         Pressure p+(e).  Values for e < eHT − 0.1 are set to NaN.
     """
     e = np.asarray(e)
-    p_raw = (1.0 / 3.0) * delta * np.log(np.cosh((e - eHT) / delta))
-    C = p1 - (1.0 / 3.0) * delta * np.log(np.cosh(0.0))
+    p_raw = cs2plus * delta * np.log(np.cosh((e - eHT) / delta))
+    C = p1 - cs2plus * delta * np.log(np.cosh(0.0))
     p = p_raw + C
     p = np.where(e < eHT*0.9, np.nan, p)
     return p if p.shape != () else p.item()
 
 
-def pminus(e, eTL, n=1):
+def pminus(e, eTL, n=1, cs2minus=1.0/3.0):
     """
     Low-temperature pressure branch p−(e).
 
     Constructed so that:
       - p(0) = 0
-      - p'(0) = 1/3
+      - p'(0) = cs2minus
       - p'(eTL) = 0
       - p'(e) strictly decreasing
 
@@ -65,6 +66,7 @@ def pminus(e, eTL, n=1):
     e   : array_like  Energy density.
     eTL : float       Energy at the LT turning point.
     n   : float       Shape exponent (default 1).
+    cs2minus : float  Speed of sound squared at e=0 (default 1/3).
 
     Returns
     -------
@@ -74,7 +76,8 @@ def pminus(e, eTL, n=1):
     e = np.asarray(e)
     p = np.full_like(e, np.nan, dtype=float)
     mask = e <= eTL*1.1
-    p[mask] = (1.0 / 3.0) * (
+    # cs2minus controls the slope at e=0
+    p[mask] = cs2minus * (
         e[mask] - e[mask] ** (n + 1) / ((n + 1) * eTL ** n)
     )
     return p if p.shape != () else p.item()

@@ -38,6 +38,8 @@ N     = 4.0    # LT branch shape exponent
 DELTA = 1.0    # HT branch smoothing scale
 STL   = 8.45   # LT entropy anchor
 STH   = 2.5    # HT entropy anchor
+CS2_PLUS  = 1.0/3.0  # Speed of sound squared in the conformal limit (HT branch)
+CS2_MINUS = 1.0/3.0  # Speed of sound squared at e=0 (LT branch)
 
 # ---------------------------------------------------------------------------
 # Energy ranges for phase-space sampling
@@ -99,6 +101,8 @@ if __name__ == "__main__":
         delta=DELTA,
         sTL=STL,
         sTH=STH,
+        cs2plus = CS2_PLUS,
+        cs2minus = CS2_MINUS,
         nucleation_energies_allowed=NUCLEATION_ENERGY_RANGE,
         bubble_energies_allowed=BUBBLE_ENERGY_RANGE,
         xiw_resolution=XIW_RESOLUTION,
