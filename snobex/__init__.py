@@ -17,7 +17,13 @@ from .thermodynamics import (
     calculate_temperature,
     find_critical_temperature,
 )
-from .hydrodynamics import find_deto, find_def, find_hyb, find_shocked_detonation
+from .hydrodynamics import (
+    find_deto,
+    find_def,
+    find_hyb,
+    find_shocked_detonation,
+    find_shocked_detonation_jouguet,
+)
 from .plotting import interactive_bubble_plot
 
 __all__ = [
@@ -34,5 +40,6 @@ __all__ = [
     "find_def",
     "find_hyb",
     "find_shocked_detonation",
+    "find_shocked_detonation_jouguet",
     "interactive_bubble_plot",
 ]

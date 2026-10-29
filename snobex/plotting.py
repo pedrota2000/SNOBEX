@@ -21,7 +21,8 @@ from scipy.interpolate import CubicSpline
 
 from .eos import pplus as _pplus_analytic, pminus as _pminus_analytic
 from .hydrodynamics import (
-    find_shocked_detonation, system_minus, find_deto, find_def, find_hyb,
+    find_shocked_detonation, find_shocked_detonation_jouguet,
+    shocked_detonation_strip, system_minus, find_deto, find_def, find_hyb,
     _e_max_from_pressure
 )
 from .separators import (
@@ -42,8 +43,7 @@ from .separators import (
 def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energies_allowed,
                           p0=0.0, p1=0.0, xiw_resolution=25, en_resolution=50,
                           contour_resolution=500, show_eos=True,
-                          sminus=None, splus=None, tminus=None, tplus=None,cs2plus = 1/3,cs2minus = 1/3,
-                          n=4.0, delta=1.0,
+                          sminus=None, splus=None, tminus=None, tplus=None, n=4.0, delta=1.0,
                           sTL=None, sTH=None, saving=False, load_eos=None,
                           custom_pplus=None, custom_pminus=None,
                           custom_cs2_plus=None, custom_cs2_minus=None,
@@ -125,23 +125,30 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     if custom_pplus is not None:
         pplus  = custom_pplus
     else:
-        def pplus(e, eHT, p1_arg=p1, delta=delta, cs2plus=cs2plus):
-            return _pplus_analytic(e, eHT, p1_arg, delta, cs2plus)
+        def pplus(e, eHT, p1_arg=p1, delta=delta):
+            return _pplus_analytic(e, eHT, p1_arg, delta)
 
     if custom_pminus is not None:
         pminus = custom_pminus
     else:
-        def pminus(e, eTL_arg, p0_arg=p0, n=n, cs2minus=cs2minus):
-            return _pminus_analytic(e, eTL_arg, n, cs2minus)
+        def pminus(e, eTL_arg, p0_arg=p0, n=n):
+            return _pminus_analytic(e, eTL_arg, n)
 
     # ------------------------------------------------------------------
     # Energy scale
     # ------------------------------------------------------------------
-    if eTL > eTH:
+    if custom_pplus is not None:
+        # Tabulated EoS (NaN outside its branches): bracket the root instead
+        e_max = _e_max_from_pressure(eTH, eTL, p0, p1, pminus, pplus)
+    elif eTL > eTH:
         e_max = fsolve(lambda e: pminus(eTL, eTL, p0) - pplus(e, eTH, p1), eTL * 2)[0]
     else:
         e_max = fsolve(lambda e: pminus(eTL, eTL, p0) - pplus(e, eTH, p1), eTH * 5)[0]
     e_max *= 2.0
+    if custom_pplus is not None:
+        # ...and do not go past the top of the tabulated HT branch
+        e_scan = np.linspace(eTH, e_max, 2000)
+        e_max = float(e_scan[np.isfinite(pplus(e_scan, eTH, p1))].max())
     print(f"[snobex] e_max = {e_max:.4f}")
 
     # ------------------------------------------------------------------
@@ -414,8 +421,12 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     
     def _shocked_det_worker(args):
         xiw, eN = args
-        result = find_shocked_detonation(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
-                                         cs2_plus, cs2_minus)
+        # Definitive finder: selects the second shock via the Jouguet condition.
+        # The legacy find_shocked_detonation (family of shocks) is kept in
+        # snobex.hydrodynamics for reference.
+        result = find_shocked_detonation_jouguet(eN, xiw, pplus, pminus,
+                                                 eTH, eTL, p0, p1,
+                                                 cs2_plus, cs2_minus)
         return xiw, eN, result
 
     # ------------------------------------------------------------------
@@ -472,14 +483,19 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     _batch_plot(ax_det, ax_C, ax_alpha, hybrid_flows, 'go', 'Hybrids', 3, _alphan)
     results_dict['Hydro_flows']['hybrid'] = _pack_flows(hybrid_flows, _alphan)
 
-    # Shocked detonations (exist only for fast walls → narrower ξ_w range).
-    # A single (ξ_w, E_N) may yield several candidate shock positions, so each
-    # worker returns parallel lists.  Plotting/packing is deferred until after
-    # the entropy check, which decides which candidates survive.
-    xiw_sds = np.linspace(0.6, 0.99, xiw_resolution)
-    en_sds  = np.linspace(nucleation_energies[0], nucleation_energies[-1], en_resolution)
-    XIW, E = np.meshgrid(xiw_sds, en_sds, indexing='ij')
-    tasks = [(XIW[i, j], E[i, j]) for i in range(XIW.shape[0]) for j in range(XIW.shape[1])]
+    # Shocked detonations live in a thin strip of wall speeds just below the
+    # ordinary detonations, usually narrower than a grid cell: locate the
+    # strip for each E_N and sample ξ_w inside it.  Each worker returns
+    # parallel lists.  Plotting/packing is deferred until after the entropy
+    # check, which decides which candidates survive.
+    en_sds = np.linspace(nucleation_energies[0], nucleation_energies[-1], en_resolution)
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        strips = list(ex.map(
+            lambda eN: shocked_detonation_strip(
+                eN, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus),
+            en_sds))
+    tasks = [(xiw, eN) for eN, (lo, hi) in zip(en_sds, strips) if hi > lo
+             for xiw in np.linspace(lo, hi, xiw_resolution)]
     total = len(tasks);  done = 0
     with concurrent.futures.ThreadPoolExecutor() as ex:
         for xiw, eN, result in ex.map(_shocked_det_worker, tasks):

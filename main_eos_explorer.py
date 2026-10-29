@@ -11,8 +11,10 @@ Usage
 -----
     python main_eos_explorer.py
 
-Optional: set ``CUSTOM_EOS_FILE`` below to load tabulated EoS data from
-a plain text file (two columns: energy density and pressure).
+Optional: set ``CUSTOM_EOS_FILE`` below to compute the bubbles of a
+tabulated EoS (columns p, e and optionally T, s; see ``snobex.eos.load_custom_eos``)
+when "Compute all bubbles" is pressed.  The panels and sliders still show
+the analytic model.
 
 EoS parameters
 --------------
@@ -49,12 +51,15 @@ if __name__ == "__main__":
     print_logo()
 
 # ---------------------------------------------------------------------------
-# Optional: path to a custom EoS file.
+# Optional: path to a custom EoS table (columns p, e and optionally T, s).
 # Set to None to use the built-in analytic parametrisation.
-# The file must have at least two columns: energy density and pressure.
-# An optional third column may contain c_s²(e) directly.
 # ---------------------------------------------------------------------------
-CUSTOM_EOS_FILE = None  # e.g. "my_eos.dat"
+CUSTOM_EOS_FILE    = None          # e.g. "Data_holo/thermo_phiM1.txt"
+CUSTOM_EOS_COLUMNS = (0, 1, 2, 3)  # columns of (T, p, e, s); (0, 6, 7, 1) for thermo_phiM*.txt;
+                                   # None for T and s rebuilds them from p(e), e.g. (None, 1, 0, None)
+CUSTOM_EOS_IDX_MIN = 0             # rows to skip at the high-energy end of the table
+CUSTOM_EOS_TC      = None          # T_c if known (1.0 for tables in units of T_c)
+CUSTOM_EOS_CS2_FROM = 'pe'         # 'pe': cs2 = dp/de; 'Ts': cs2 = (s/T) dT/ds (holographic tables)
 
 # ---------------------------------------------------------------------------
 # Default initial parameter values
@@ -66,30 +71,18 @@ INITIAL_STL   = 8.45
 INITIAL_STH   = 2.5
 INITIAL_DELTA = 1.0
 INITIAL_N     = 4.0
-INITIAL_CS2PLUS = 1.0/3.0
-INITIAL_CS2MINUS = 1.0/3.0
 
 # ---------------------------------------------------------------------------
 # Custom EoS loading (optional)
 # ---------------------------------------------------------------------------
-custom_pplus_func  = None
-custom_pminus_func = None
+custom_eos = None
 if CUSTOM_EOS_FILE is not None:
     try:
-        _p_func, _cs2_func, _e_lo, _e_hi = load_custom_eos(CUSTOM_EOS_FILE)
-        # Split at the midpoint of the energy range as a simple heuristic.
-        # Users may adjust this logic for their specific data layout.
-        _e_mid = (_e_lo + _e_hi) / 2.0
-        print(
-            f"[EoS Explorer] Custom EoS loaded. "
-            f"Using e ≤ {_e_mid:.4g} as LT branch and e > {_e_mid:.4g} as HT branch."
-        )
-        # Wrap the single tabulated EoS into the expected two-argument signature
-        custom_pplus_func  = lambda e, eHT, p1_arg, **kw: _p_func(np.asarray(e))
-        custom_pminus_func = lambda e, eTL_arg, p0_arg, **kw: _p_func(np.asarray(e))
+        custom_eos = load_custom_eos(CUSTOM_EOS_FILE, columns=CUSTOM_EOS_COLUMNS,
+                                     idx_min=CUSTOM_EOS_IDX_MIN, Tc=CUSTOM_EOS_TC,
+                                     cs2_from=CUSTOM_EOS_CS2_FROM)
     except Exception as exc:
         print(f"[EoS Explorer] Warning: could not load custom EoS — {exc}")
-        CUSTOM_EOS_FILE = None
 
 
 # ---------------------------------------------------------------------------
@@ -152,10 +145,8 @@ def _get_critical_temperature(eTH, eTL, p1, sTL, sTH, delta, n):
         if len(e_m) == 0 or len(e_p) == 0:
             return None
 
-        cs2minus = slider_cs2minus.val if 'slider_cs2minus' in globals() else INITIAL_CS2MINUS
-        cs2plus = slider_cs2plus.val if 'slider_cs2plus' in globals() else INITIAL_CS2PLUS
-        f_minus = -np.array([pminus(e, eTL, n, cs2minus) for e in e_m])
-        f_plus  = -np.array([pplus(e, eTH, p1, delta, cs2plus) for e in e_p])
+        f_minus = -np.array([pminus(e, eTL, n) for e in e_m])
+        f_plus  = -np.array([pplus(e, eTH, p1, delta) for e in e_p])
         return find_critical_temperature(T_m, f_minus, T_p, f_plus)
 
     except Exception as exc:
@@ -220,6 +211,18 @@ def _find_energy_at_tc(eTH, eTL, p1, sTL, sTH, t_c, delta, n, branch):
 # Button callback: launch full bubble computation
 # ---------------------------------------------------------------------------
 def _compute_all_bubbles(event):
+    if custom_eos is not None:
+        print("\n[EoS Explorer] Computing bubble phase space for the custom EoS…")
+        interactive_bubble_plot(
+            xiw_resolution=XIW_RESOLUTION,
+            en_resolution=EN_RESOLUTION,
+            contour_resolution=CONTOUR_RESOLUTION,
+            show_eos=True,
+            saving=True,
+            **custom_eos,
+        )
+        return
+
     eTH   = slider_eTH.val
     eTL   = slider_eTL.val
     p1    = slider_p1.val
@@ -227,8 +230,6 @@ def _compute_all_bubbles(event):
     sTH   = slider_sTH.val
     delta = slider_delta.val
     n     = slider_n.val
-    cs2plus = slider_cs2plus.val
-    cs2minus = slider_cs2minus.val
 
     print("\n[EoS Explorer] Computing bubble phase space…")
     print(f"  eTH={eTH:.3f}  eTL={eTL:.3f}  p1={p1:.3f}  delta={delta:.3f}  n={n:.3f}")
@@ -261,11 +262,7 @@ def _compute_all_bubbles(event):
         sminus=s_minus_interp,
         splus=s_plus_interp,
         sTL=sTL, sTH=sTH,
-        cs2plus=cs2plus,
-        cs2minus=cs2minus,
         saving=True,
-        custom_pplus=custom_pplus_func,
-        custom_pminus=custom_pminus_func,
     )
 
 
@@ -284,15 +281,13 @@ def _update_plots(val):
     n     = slider_n.val
 
     try:
-        cs2minus = slider_cs2minus.val if 'slider_cs2minus' in globals() else INITIAL_CS2MINUS
-        cs2plus = slider_cs2plus.val if 'slider_cs2plus' in globals() else INITIAL_CS2PLUS
-        e_max = fsolve(lambda e: pminus(eTL, eTL, n, cs2minus) - pplus(e, eTH, p1, delta, cs2plus), eTH * 10)[0]
+        e_max = fsolve(lambda e: pminus(eTL, eTL, n) - pplus(e, eTH, p1, delta), eTH * 10)[0]
         e_max = max(e_max, eTH + 0.2)
 
         # ---- EoS plot ----
         e_vals   = np.linspace(0, e_max, 1000)
-        p_p = pplus(e_vals, eTH, p1, delta, cs2plus)
-        p_m = pminus(e_vals, eTL, n, cs2minus)
+        p_p = pplus(e_vals, eTH, p1, delta)
+        p_m = pminus(e_vals, eTL, n)
         line_plus_eos.set_data(e_vals, p_p)
         line_minus_eos.set_data(e_vals, p_m)
         ax1.set_xlim(0, e_max * 1.1)
@@ -351,12 +346,12 @@ def _update_plots(val):
         # ---- Temperature, free energy, S/T³, S vs T ----
         t_c = None
         for (e_arr, s_arr, p_func, e_T, p_par,
-               line_eT, line_fT, line_st3, line_sT) in [
-              (e_m, s_m, lambda e: pminus(e, eTL, n, cs2minus), eTL, None,
-               line_minus_e_vs_t, line_minus_f_vs_t, line_minus_s_t3, line_minus_s_vs_t),
-              (e_p, s_p, lambda e: pplus(e, eTH, p1, delta, cs2plus), eTH, p1,
-               line_plus_e_vs_t, line_plus_f_vs_t, line_plus_s_t3, line_plus_s_vs_t),
-           ]:
+             line_eT, line_fT, line_st3, line_sT) in [
+            (e_m, s_m, lambda e: pminus(e, eTL, n), eTL, None,
+             line_minus_e_vs_t, line_minus_f_vs_t, line_minus_s_t3, line_minus_s_vs_t),
+            (e_p, s_p, lambda e: pplus(e, eTH, p1, delta), eTH, p1,
+             line_plus_e_vs_t, line_plus_f_vs_t, line_plus_s_t3, line_plus_s_vs_t),
+        ]:
             if len(e_arr) < 3:
                 for ln in (line_eT, line_fT, line_st3, line_sT):
                     ln.set_data([], [])
@@ -542,8 +537,6 @@ ax_sTL   = plt.axes([0.55, _bm + 5 * _ss, 0.35, _sh])
 ax_sTH   = plt.axes([0.10, _bm + 4 * _ss, 0.35, _sh])
 ax_delta = plt.axes([0.55, _bm + 4 * _ss, 0.35, _sh])
 ax_n     = plt.axes([0.10, _bm + 3 * _ss, 0.35, _sh])
-ax_cs2plus = plt.axes([0.55, _bm + 2 * _ss, 0.35, _sh])
-ax_cs2minus = plt.axes([0.10, _bm + 2 * _ss, 0.35, _sh])
 ax_btn   = plt.axes([0.55, _bm + 3 * _ss, 0.35, _sh])
 
 slider_eTH   = Slider(ax_eTH,   'eTH',   0.01, 2.0,  valinit=INITIAL_ETH,   valfmt='%.2f')
@@ -553,8 +546,6 @@ slider_sTL   = Slider(ax_sTL,   'sTL',   0.1,  20.0, valinit=INITIAL_STL,   valf
 slider_sTH   = Slider(ax_sTH,   'sTH',   0.01, 20.0, valinit=INITIAL_STH,   valfmt='%.2f')
 slider_delta = Slider(ax_delta, 'delta', 0.1,  50.0, valinit=INITIAL_DELTA, valfmt='%.2f')
 slider_n     = Slider(ax_n,     'n',     0.1,  10.0, valinit=INITIAL_N,     valfmt='%.2f')
-slider_cs2plus = Slider(ax_cs2plus, 'cs2plus', 0.0, 1.0, valinit=INITIAL_CS2PLUS, valfmt='%.3f')
-slider_cs2minus = Slider(ax_cs2minus, 'cs2minus', 0.0, 1.0, valinit=INITIAL_CS2MINUS, valfmt='%.3f')
 
 button_compute = Button(ax_btn, 'Compute all bubbles')
 button_compute.on_clicked(_compute_all_bubbles)
@@ -587,7 +578,7 @@ for ax, xl, yl in [
 
 # Connect sliders
 for sl in (slider_eTH, slider_eTL, slider_p1, slider_sTL,
-        slider_sTH, slider_delta, slider_n, slider_cs2plus, slider_cs2minus):
+           slider_sTH, slider_delta, slider_n):
     sl.on_changed(_update_plots)
 
 # Initial render

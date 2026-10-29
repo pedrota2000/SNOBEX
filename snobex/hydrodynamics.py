@@ -9,7 +9,10 @@ Four solution types are supported:
 * **Deflagration** – subsonic wall, shock in front of the wall.
 * **Hybrid** – detonation wall with a preceding rarefaction region.
 * **Shocked detonation** – detonation whose rarefaction is terminated by an
-  additional shock inside the LT fluid (two discontinuities).
+  additional shock inside the LT fluid (two discontinuities).  The definitive
+  finder is ``find_shocked_detonation_jouguet``, which selects the second shock
+  via the Jouguet condition; ``find_shocked_detonation`` (a family of shocks)
+  is retained for reference.
 
 The module also exports the relativistic fluid ODE ``system_minus``
 and all junction-condition residuals so that callers can construct
@@ -54,6 +57,32 @@ def system_minus(t, y, p_func, cs2_func, eT, p0):
     dxi_dt = xi * ((xi - v)**2 - cs2 * (1.0 - xi * v)**2)
     de_dt  = 2.0 * (e + p_func(e, eT, p0)) * v * (xi - v)
     return [dv_dt, dxi_dt, de_dt]
+
+
+def _edge_events(cs2_func):
+    """
+    Terminal events for ``solve_ivp(system_minus, ...)`` that stop a flow
+    just before it leaves the energy range of a tabulated EoS branch, whose
+    interpolants return NaN outside it (see ``load_custom_eos``).  Without
+    them the integrator keeps shrinking its step towards the edge of the
+    table and never finishes.  Analytic EoS callables extrapolate and get
+    no events, so their flows are unchanged.
+    """
+    if getattr(cs2_func, 'extrapolate', True):
+        return None
+    lo, hi = float(cs2_func.x[0]), float(cs2_func.x[-1])
+    tol = 1e-6 * (hi - lo)
+
+    def _below(t, y, *args):
+        return y[2] - (lo + tol)
+
+    def _above(t, y, *args):
+        return (hi - tol) - y[2]
+
+    for ev in (_below, _above):
+        ev.terminal = True
+        ev.direction = -1   # only when moving out of the table
+    return [_below, _above]
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +157,19 @@ def j_system_shock_weird_det_rest(xishem, v_inter, e_inter, pplus, pminus,
     ep = e_inter(xish)
     vp = (v_inter(xish) - xish) / (1.0 - v_inter(xish) * xish)
     vm = -xish
+    val = _jc_residual(vp, vm, ep, em, pplus(ep, eHT, p1), pminus(em, eLT, p0))
+    return np.where(np.isnan(val), 1e2, val)
+
+
+def j_system_shock_weird_jouguet(xishem, v_inter, e_inter, cs2_minus,
+                                 pplus, pminus, eHT, eLT, p0, p1):
+    """Shock junction for a shocked detonation with the Jouguet condition
+    imposed on the downstream state, vm = −c_s−(em); solves for (xi_sh, em).
+    The plus state is read from the flow interpolants at ``xi_sh``."""
+    xish, em = xishem
+    ep = e_inter(xish)
+    vp = (v_inter(xish) - xish) / (1.0 - v_inter(xish) * xish)
+    vm = -np.sqrt(np.maximum(0, cs2_minus(em)))
     val = _jc_residual(vp, vm, ep, em, pplus(ep, eHT, p1), pminus(em, eLT, p0))
     return np.where(np.isnan(val), 1e2, val)
 
@@ -266,11 +308,11 @@ def find_deto(e_out, xiw, pplus, pminus, eTH, eTL, p0, p1,
     # Backward integration
     t_bw = np.linspace(0, -50, 5000)
     flow_bw = solve_ivp(system_minus, (t_bw[0], t_bw[-1]), init_point,
-                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0))
+                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
     # Forward integration
     t_fw = np.linspace(0, 2, 5000)
     flow_fw = solve_ivp(system_minus, (t_fw[0], t_fw[-1]), init_point,
-                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0))
+                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
 
     v_flow  = np.concatenate((np.flip(flow_bw.y[0]), flow_fw.y[0]))
     xi_flow = np.concatenate((np.flip(flow_bw.y[1]), flow_fw.y[1]))
@@ -374,7 +416,7 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
     t_eval = np.linspace(0, 100, 1000) if dxi_dt > 0 else np.linspace(0, -100, 1000)
 
     flow = solve_ivp(system_minus, (t_eval[0], t_eval[-1]), init_point,
-                     t_eval=t_eval, args=(pplus, cs2_plus, eTH, p1))
+                     t_eval=t_eval, args=(pplus, cs2_plus, eTH, p1), events=_edge_events(cs2_plus))
     v_f, xi_f, e_f = flow.y
 
     if np.any(np.diff(xi_f) < 0):
@@ -471,9 +513,9 @@ def find_hyb(emwall, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
     t_fw = np.linspace(0,  2, 5000)
     t_bw = np.linspace(0, -50, 5000)
     flow_fw = solve_ivp(system_minus, (t_fw[0], t_fw[-1]), init_point,
-                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0))
+                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
     flow_bw = solve_ivp(system_minus, (t_bw[0], t_bw[-1]), init_point,
-                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0))
+                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
 
     v_r  = np.concatenate((np.flip(flow_bw.y[0]), flow_fw.y[0]))
     xi_r = np.concatenate((np.flip(flow_bw.y[1]), flow_fw.y[1]))
@@ -541,7 +583,7 @@ def find_hyb(emwall, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
     t_eval = np.linspace(0, 20, 100) if dxi_dt > 0 else np.linspace(0, -20, 100)
 
     flow_p = solve_ivp(system_minus, (t_eval[0], t_eval[-1]), init_p,
-                       t_eval=t_eval, args=(pplus, cs2_plus, eTH, p1))
+                       t_eval=t_eval, args=(pplus, cs2_plus, eTH, p1), events=_edge_events(cs2_plus))
     v_f, xi_f, e_f = flow_p.y
 
     if np.any(np.diff(xi_f) < 0):
@@ -675,12 +717,12 @@ def find_shocked_detonation(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
     # ------------------------------------------------------------------
     t_bw = np.linspace(0, -50, 5000)
     flow_bw = solve_ivp(system_minus, (t_bw[0], t_bw[-1]), init_point,
-                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0))
+                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
     v_flow, xi_flow, e_flow = flow_bw.y
 
     t_fw = np.linspace(0, 2, 5000)
     flow_fw = solve_ivp(system_minus, (t_fw[0], t_fw[-1]), init_point,
-                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0))
+                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
 
     v_flow = np.concatenate((np.flip(v_flow), flow_fw.y[0]))
     xi_flow = np.concatenate((np.flip(xi_flow), flow_fw.y[1]))
@@ -789,7 +831,7 @@ def find_shocked_detonation(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
         t_bw = np.linspace(0, -100, 50000)
         flow_backward = solve_ivp(system_minus, (t_bw[0], t_bw[-1]),
                                   init_point, t_eval=t_bw,
-                                  args=(pminus, cs2_minus, eTL, p0),
+                                  args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus),
                                   method='RK45', rtol=1e-8, atol=1e-10)
         v_backward, xi_backward, e_backward = flow_backward.y
 
@@ -818,6 +860,271 @@ def find_shocked_detonation(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
         eC_list.append(e_backward[0])
         flow_list.append((v_backward, xi_backward, e_backward))
 
+    return eC_list, eN_list, xiw_list, flow_list, xish_list
+
+
+def _detonation_wall_state(eN, xiw, pplus, pminus, eTH, eTL, p0, p1):
+    """
+    LT state (vm, em) just behind a detonation wall moving at ``xiw`` into
+    the HT phase at rest with energy ``eN``, or None if the junction
+    conditions have no solution on the LT branch.
+    """
+    vp = -xiw
+    sol_m = res = None
+    for guess in [(-0.9, eTL * 0.2), (-0.5 * xiw, eTL * 0.5)]:
+        try:
+            sol = least_squares(j_system_minus, guess,
+                                args=(vp, eN, pplus, pminus, eTH, eTL, p0, p1),
+                                bounds=([-1, 0.0], [0, eTL]),
+                                ftol=1e-12, xtol=1e-12)
+        except Exception:
+            continue
+        sol_m = sol.x
+        res = j_system_minus(sol.x, vp, eN, pplus, pminus, eTH, eTL, p0, p1)
+        if (not np.any(np.isnan(res))) and np.mean(np.array(res)**2) < 1e-8:
+            break
+
+    if sol_m is None or np.isnan(sol_m).any() or np.mean(np.array(res)**2) > 1e-10:
+        return None
+    return sol_m
+
+
+def shocked_detonation_strip(eN, pplus, pminus, eTH, eTL, p0, p1,
+                             cs2_plus, cs2_minus, xiw_max=0.99, n_coarse=50,
+                             tol=1e-4):
+    """
+    Wall speeds [xi_lo, xi_hi] at nucleation energy ``eN`` where shocked
+    detonations can exist: from the slowest wall that admits a detonation
+    junction (xi_lo) to the slowest one whose rarefaction still reaches rest,
+    i.e. an ordinary detonation (xi_hi).  The strip is typically much
+    narrower than a plotting grid cell, so it is located by bisection.
+
+    Returns
+    -------
+    (xi_lo, xi_hi) : floats, or (NaN, NaN) if no detonation wall exists.
+    """
+    if np.ndim(eN) > 0:
+        eN = eN.item()
+
+    def wall(x):
+        return _detonation_wall_state(eN, x, pplus, pminus, eTH, eTL, p0, p1) is not None
+
+    def rest(x):
+        return np.isfinite(find_deto(eN, x, pplus, pminus, eTH, eTL, p0, p1,
+                                     cs2_plus, cs2_minus)[0])
+
+    def first(pred, a, b):
+        """Smallest x in [a, b] where the monotone predicate becomes true."""
+        prev = a
+        for x in np.linspace(a, b, n_coarse):
+            if pred(x):
+                break
+            prev = x
+        else:
+            return None
+        lo, hi = prev, x
+        while hi - lo > tol:
+            mid = 0.5 * (lo + hi)
+            if pred(mid):
+                hi = mid
+            else:
+                lo = mid
+        return hi
+
+    xi_min = float(np.sqrt(np.maximum(0, cs2_plus(eN))))
+    xi_lo = first(wall, xi_min, xiw_max)
+    if xi_lo is None:
+        return np.nan, np.nan
+    xi_hi = first(rest, xi_lo, xiw_max)
+    return xi_lo, (xiw_max if xi_hi is None else xi_hi)
+
+
+def find_shocked_detonation_jouguet(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
+                                    cs2_plus, cs2_minus):
+    """
+    Compute the *unique* shocked-detonation solution for a given nucleation
+    energy ``eN`` and wall velocity ``xiw``.
+
+    This is the definitive shocked-detonation finder.  It shares steps (1)-(3a)
+    with :func:`find_shocked_detonation` but, when no shock jumping directly to
+    rest exists, it selects the second shock by imposing the Jouguet condition
+    on the downstream state, ``vm = -c_s-(em)`` (the fluid leaves the shock
+    exactly at the local sound speed).  This picks a single shock position
+    ``xi_sh`` instead of the whole family returned by
+    :func:`find_shocked_detonation`.
+
+    Returns
+    -------
+    eC_list, eN_list, xiw_list, flow_list, xish_list : list
+        Single-entry parallel lists (matching the ``find_shocked_detonation``
+        signature); failed cases contribute NaN placeholders.
+    """
+    eC_list, eN_list, xiw_list, flow_list, xish_list = [], [], [], [], []
+
+    def _fail():
+        eC_list.append(np.nan)
+        eN_list.append(np.nan)
+        xiw_list.append(np.nan)
+        flow_list.append([np.nan, np.nan, np.nan])
+        xish_list.append(np.nan)
+        return eC_list, eN_list, xiw_list, flow_list, xish_list
+
+    if np.ndim(eN) > 0:
+        eN = eN.item()
+
+    if xiw < np.sqrt(np.maximum(0, cs2_plus(eN))):
+        return _fail()
+
+    # ------------------------------------------------------------------
+    # (1) LT state just behind the wall
+    # ------------------------------------------------------------------
+    sol_m = _detonation_wall_state(eN, xiw, pplus, pminus, eTH, eTL, p0, p1)
+    if sol_m is None:
+        return _fail()
+
+    vm, em = sol_m
+    init_point = [(vm + xiw) / (1.0 + xiw * vm), xiw, em]
+
+    # ------------------------------------------------------------------
+    # (2) Integrate the LT flow and keep the injective piece
+    # ------------------------------------------------------------------
+    t_bw = np.linspace(0, -50, 5000)
+    flow_bw = solve_ivp(system_minus, (t_bw[0], t_bw[-1]), init_point,
+                        t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
+    v_flow, xi_flow, e_flow = flow_bw.y
+
+    t_fw = np.linspace(0, 2, 5000)
+    flow_fw = solve_ivp(system_minus, (t_fw[0], t_fw[-1]), init_point,
+                        t_eval=t_fw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus))
+
+    v_flow = np.concatenate((np.flip(v_flow), flow_fw.y[0]))
+    xi_flow = np.concatenate((np.flip(xi_flow), flow_fw.y[1]))
+    e_flow = np.concatenate((np.flip(e_flow), flow_fw.y[2]))
+
+    v_flow = np.flip(v_flow[e_flow <= init_point[2]])
+    xi_flow = np.flip(xi_flow[e_flow <= init_point[2]])
+    e_flow = np.flip(e_flow[e_flow <= init_point[2]])
+
+    if np.any(xi_flow > init_point[1]):
+        return _fail()
+
+    diff_xi = np.diff(xi_flow)
+    breaks = np.where(diff_xi > 0)[0]
+    if len(breaks) > 0:
+        last_break = breaks[0]
+        if np.abs(v_flow[last_break]) < 2e-6:
+            return _fail()
+        xi_flow = xi_flow[:last_break + 1]
+        v_flow = v_flow[:last_break + 1]
+        e_flow = e_flow[:last_break + 1]
+
+    if len(xi_flow) <= 1:
+        return _fail()
+
+    xi_flow = xi_flow[::-1]
+    v_flow = v_flow[::-1]
+    e_flow = e_flow[::-1]
+
+    unique_xi_flow, unique_indices = np.unique(xi_flow, return_index=True)
+    xi_flow = unique_xi_flow
+    v_flow = v_flow[unique_indices]
+    e_flow = e_flow[unique_indices]
+
+    e_interp = CubicSpline(xi_flow, e_flow, extrapolate=False)
+    v_interp = CubicSpline(xi_flow, v_flow, extrapolate=False)
+
+    # ------------------------------------------------------------------
+    # (3a) Try a shock that jumps directly to a state at rest
+    # ------------------------------------------------------------------
+    x_in_list = np.linspace(xi_flow[0] + 1e-16, xi_flow[-1] - 1e-16, 500)
+
+    sol = least_squares(j_system_shock_weird_det_rest,
+                        (np.mean(x_in_list), eTL / 2),
+                        args=(v_interp, e_interp, pminus, pminus, eTL, eTL, p0, p0),
+                        bounds=((x_in_list[0], 0), (x_in_list[-1], eTL)))
+    xish, eC = sol.x
+    res = np.array(sol.fun)
+    if np.mean(res**2) < 1e-10 and eC < eTL and \
+            xish >= x_in_list[0] and xish < x_in_list[-1]:
+        xi_inner = np.linspace(0, xish, 3000)
+        xi_rare = np.linspace(xish, xi_flow[-1], 3000)
+        xi_outer = np.linspace(xi_flow[-1], 1, 3000)
+
+        xi_flow_out = np.concatenate((xi_inner, xi_rare, xi_outer))
+        v_flow_out = np.concatenate((
+            np.zeros(3000),
+            v_interp(xi_rare),
+            np.zeros(3000),
+        ))
+        e_flow_out = np.concatenate((
+            eC * np.ones(3000),
+            e_interp(xi_rare),
+            eN * np.ones(3000),
+        ))
+        xiw_list.append(xiw)
+        eN_list.append(eN)
+        eC_list.append(eC)
+        flow_list.append((v_flow_out, xi_flow_out, e_flow_out))
+        xish_list.append(xish)
+        return eC_list, eN_list, xiw_list, flow_list, xish_list
+
+    # ------------------------------------------------------------------
+    # (3b) Otherwise, select the second shock by the Jouguet condition
+    #      vm = -c_s-(em), which picks a single shock position, then
+    #      integrate a rarefaction down to rest.
+    # ------------------------------------------------------------------
+    sol = least_squares(j_system_shock_weird_jouguet,
+                        (np.mean(xi_flow), eTL / 2),
+                        args=(v_interp, e_interp, cs2_minus,
+                              pminus, pminus, eTL, eTL, p0, p0),
+                        bounds=((min(xi_flow), 0), (max(xi_flow), eTL)))
+    xish, em = sol.x
+    vm = -np.sqrt(np.maximum(0, cs2_minus(em)))
+    ep = e_interp(xish)
+    vp = (v_interp(xish) - xish) / (1.0 - xish * v_interp(xish))
+    res = np.array(sol.fun)
+    v = (vm + xish) / (1.0 + vm * xish)
+
+    # The residual tolerance is relaxed to 1e-6 (from 1e-10): branch (3b)
+    # evaluates the JCs through CubicSpline interpolants of the flow, whose
+    # interpolation error puts a noise floor of ~1e-7 on the achievable
+    # residual. Demanding <1e-10 rejects genuine roots and leaves a gap in the
+    # lower part of the shocked-detonation band. The geometric guards v>=0 and
+    # abs(ep-em) (relaxed 1e-2 -> 1e-4) still reject spurious/weak shocks.
+    if np.mean(res**2) > 1e-6 or v < -1e-6 or abs(ep - em) < 1e-4:
+        return _fail()
+
+    init_point = [(vm + xish) / (1.0 + vm * xish), xish, em]
+    t_bw = np.linspace(0, -100, 50000)
+    flow_backward = solve_ivp(system_minus, (t_bw[0], t_bw[-1]), init_point,
+                              t_eval=t_bw, args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus),
+                              method='RK45', rtol=1e-8, atol=1e-10)
+    v_backward, xi_backward, e_backward = flow_backward.y
+
+    xi_backward = np.concatenate((
+        np.linspace(0, xi_backward[-1], 3000),
+        np.flip(xi_backward),
+        xi_flow[xi_flow >= xish],
+        np.linspace(xi_flow[xi_flow >= xish][-1], 1, 3000),
+    ))
+    v_backward = np.concatenate((
+        np.zeros(3000),
+        np.flip(v_backward),
+        v_flow[xi_flow >= xish],
+        np.zeros(3000),
+    ))
+    e_backward = np.concatenate((
+        e_backward[-1] * np.ones(3000),
+        np.flip(e_backward),
+        e_flow[xi_flow >= xish],
+        eN * np.ones(3000),
+    ))
+
+    xish_list.append(xish)
+    xiw_list.append(xiw)
+    eN_list.append(eN)
+    eC_list.append(e_backward[0])
+    flow_list.append((v_backward, xi_backward, e_backward))
     return eC_list, eN_list, xiw_list, flow_list, xish_list
 
 

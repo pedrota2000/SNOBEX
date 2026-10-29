@@ -17,13 +17,14 @@ documented in ``snobex.plotting.interactive_bubble_plot``.
 
 Custom EoS
 ----------
-Set ``CUSTOM_EOS_FILE`` to the path of a plain-text file with at least
-two columns (energy density, pressure).  If set, the analytic p±
-parametrisations are bypassed; the same tabulated curve is used for
-both branches, split at ``CUSTOM_EOS_SPLIT_ENERGY``.  Adjust as needed.
+Set ``CUSTOM_EOS_FILE`` to a plain-text table of the full EoS curve with
+columns for p and e, and optionally T and s, which are otherwise rebuilt
+from p(e) (see ``snobex.eos.load_custom_eos``).  The table
+is split into its HT and LT branches at the c_s² = 0 turning points, and
+eTH, eTL, the energy ranges, S(E) and T(E) are taken from the data instead
+of the analytic parameters below.
 """
 
-import numpy as np
 from snobex.plotting import interactive_bubble_plot
 from snobex.eos import load_custom_eos
 
@@ -38,8 +39,6 @@ N     = 4.0    # LT branch shape exponent
 DELTA = 1.0    # HT branch smoothing scale
 STL   = 8.45   # LT entropy anchor
 STH   = 2.5    # HT entropy anchor
-CS2_PLUS  = 1.0/3.0  # Speed of sound squared in the conformal limit (HT branch)
-CS2_MINUS = 1.0/3.0  # Speed of sound squared at e=0 (LT branch)
 
 # ---------------------------------------------------------------------------
 # Energy ranges for phase-space sampling
@@ -57,8 +56,12 @@ CONTOUR_RESOLUTION = 150  # Resolution for separator/contour lines
 # ---------------------------------------------------------------------------
 # Optional: path to a custom EoS file (set to None to use analytic model)
 # ---------------------------------------------------------------------------
-CUSTOM_EOS_FILE         = None   # e.g.  "my_eos.dat"
-CUSTOM_EOS_SPLIT_ENERGY = None   # float; if None, use midpoint of energy range
+CUSTOM_EOS_FILE    = None          # e.g.  "Data_holo/thermo_phiM1.txt"
+CUSTOM_EOS_COLUMNS = (0, 1, 2, 3)  # columns of (T, p, e, s); (0, 6, 7, 1) for thermo_phiM*.txt;
+                                   # None for T and s rebuilds them from p(e), e.g. (None, 1, 0, None)
+CUSTOM_EOS_IDX_MIN = 0             # rows to skip at the high-energy end of the table
+CUSTOM_EOS_TC      = None          # T_c if known (1.0 for tables in units of T_c)
+CUSTOM_EOS_CS2_FROM = 'pe'         # 'pe': cs2 = dp/de; 'Ts': cs2 = (s/T) dT/ds (holographic tables)
 
 # ---------------------------------------------------------------------------
 # Output
@@ -72,47 +75,26 @@ OUTPUT_DIR   = "."     # Directory for output files
 if __name__ == "__main__":
     from snobex import print_logo
     print_logo()
-    custom_pplus  = None
-    custom_pminus = None
-    custom_cs2_p  = None
-    custom_cs2_m  = None
-
+    eos = dict(eTH=ETH, eTL=ETL,
+               nucleation_energies_allowed=NUCLEATION_ENERGY_RANGE,
+               bubble_energies_allowed=BUBBLE_ENERGY_RANGE)
     if CUSTOM_EOS_FILE is not None:
-        p_func, cs2_func, e_lo, e_hi = load_custom_eos(CUSTOM_EOS_FILE)
-
-        split = CUSTOM_EOS_SPLIT_ENERGY if CUSTOM_EOS_SPLIT_ENERGY is not None \
-                else (e_lo + e_hi) / 2.0
-
-        print(f"[snobex] Custom EoS split at e = {split:.4g}")
-        print(f"         e < {split:.4g} → LT branch,  e ≥ {split:.4g} → HT branch")
-
-        # Wrap tabulated EoS to match the (e, eT, p_offset) call signature
-        custom_pplus  = lambda e, eHT, p1_arg, **kw: p_func(np.asarray(e))
-        custom_pminus = lambda e, eTL_arg, p0_arg, **kw: p_func(np.asarray(e))
-        custom_cs2_p  = cs2_func
-        custom_cs2_m  = cs2_func
+        eos = load_custom_eos(CUSTOM_EOS_FILE, columns=CUSTOM_EOS_COLUMNS,
+                              idx_min=CUSTOM_EOS_IDX_MIN, Tc=CUSTOM_EOS_TC,
+                              cs2_from=CUSTOM_EOS_CS2_FROM)
 
     fig, ax = interactive_bubble_plot(
-        eTH=ETH,
-        eTL=ETL,
         p1=P1,
         p0=P0,
         n=N,
         delta=DELTA,
         sTL=STL,
         sTH=STH,
-        cs2plus = CS2_PLUS,
-        cs2minus = CS2_MINUS,
-        nucleation_energies_allowed=NUCLEATION_ENERGY_RANGE,
-        bubble_energies_allowed=BUBBLE_ENERGY_RANGE,
         xiw_resolution=XIW_RESOLUTION,
         en_resolution=EN_RESOLUTION,
         contour_resolution=CONTOUR_RESOLUTION,
         show_eos=True,
         saving=SAVE_RESULTS,
         output_dir=OUTPUT_DIR,
-        custom_pplus=custom_pplus,
-        custom_pminus=custom_pminus,
-        custom_cs2_plus=custom_cs2_p,
-        custom_cs2_minus=custom_cs2_m,
+        **eos,
     )

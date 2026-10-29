@@ -25,8 +25,9 @@ phase transitions, for a general equation of state.
 - Click-to-inspect: click any point in the phase-space plot to display
   the corresponding velocity and energy profiles.
 - Built-in α_N (phase-transition strength) computation.
-- **Custom EoS support**: load tabulated (e, p) data from a plain-text
-  file and replace the analytic parametrisations entirely. **WORK IN PROGRESS**
+- **Custom EoS support**: load a tabulated (T, p, e, s) EoS from a
+  plain-text file, split it into its two branches and replace the analytic
+  parametrisations entirely.
 - Parallel computation via `concurrent.futures`.
 - Optional result pickling for post-processing.
 
@@ -108,16 +109,16 @@ fig, ax = interactive_bubble_plot(
 
 ---
 
-## Custom EoS (WIP)
+## Custom EoS
 
 To replace the analytic model with tabulated data, provide a plain-text
-file with two (or three) columns:
+table of the whole equilibrium curve (stable, metastable and unstable
+parts, e.g. from holography or the lattice) with columns for p and e, and
+optionally T and s:
 
 ```
-# e   p(e)   [optional: cs2(e)]
-0.0   0.000
-0.1   0.033
-0.5   0.155
+# T      p        e        s
+1.0055   0.1451   5.0500   5.1666
 ...
 ```
 
@@ -125,18 +126,36 @@ Then set `CUSTOM_EOS_FILE` in either entry-point script:
 
 ```python
 # main_bubble_solver.py
-CUSTOM_EOS_FILE = "my_eos.dat"
+CUSTOM_EOS_FILE    = "Data_holo/thermo_phiM1.txt"
+CUSTOM_EOS_COLUMNS = (0, 6, 7, 1)   # columns of (T, p, e, s) in the file
+CUSTOM_EOS_TC      = None           # set to 1.0 for tables in units of T_c
+CUSTOM_EOS_CS2_FROM = 'Ts'          # c_s² = (s/T) dT/ds instead of dp/de
 ```
 
-The loader (`snobex.eos.load_custom_eos`) fits a cubic spline to the
-data and returns callable `p(e)` and `c_s²(e)` functions that are
-passed directly to the solver.  If a third column is present it is used
-as `c_s²(e)` directly; otherwise it is derived numerically from `p(e)`.
+If the table has no T and s columns (set them to `None` in
+`CUSTOM_EOS_COLUMNS`, e.g. `(None, 1, 0, None)` for an (e, p) file), they
+are rebuilt from p(e) along the whole curve: de = T ds and e + p = T s give
+d ln s = de / (e + p) and T = (e + p) / s.  This fixes them up to one
+constant factor, which does not affect which solutions are allowed; it is
+chosen so that T_c = 1.
 
-For advanced use (separate HT and LT tables), load the two files
-separately and pass them via `custom_pplus`, `custom_pminus`,
-`custom_cs2_plus`, and `custom_cs2_minus` arguments of
-`interactive_bubble_plot`.
+`CUSTOM_EOS_CS2_FROM` picks how c_s² is computed: `'pe'` (dp/de, default)
+or `'Ts'` ((s/T) dT/ds, equal by dp = s dT and de = T ds).  Use `'Ts'` for
+holographic tables, whose p column is noisy at low T and gives spurious
+c_s² > 1/3 when differentiated; use `'pe'` for tables whose p was built from
+a smooth c_s² (e.g. `eos_pure_YM_final.text`).
+
+The loader (`snobex.eos.load_custom_eos`) splits the table into its HT and
+LT branches at the turning points where c_s² = 0, and builds
+p(e), c_s²(e), S(E) and T(E) on each branch (NaN outside it).  eTH, eTL,
+T_c and the allowed nucleation and bubble energy ranges are taken from the
+data, and the entropy condition and α_N use the tabulated S and T.  It
+returns the keyword arguments of `interactive_bubble_plot`:
+
+```python
+from snobex import load_custom_eos, interactive_bubble_plot
+interactive_bubble_plot(**load_custom_eos("my_eos.dat"))
+```
 
 ---
 

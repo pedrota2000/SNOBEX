@@ -28,6 +28,7 @@ from scipy.interpolate import CubicSpline
 
 from .hydrodynamics import (
     system_minus,
+    _edge_events,
     j_system_minus,
     j_system_plus,
     j_system_det_contour,
@@ -155,18 +156,14 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
     -------
     (xi_sh, eN, eC) : each float or NaN
     """
-
     if np.ndim(xiw) > 0:
         xiw = xiw.item()
-
 
     sol_infl = least_squares(inf_point_eq, eTL / 2.0, bounds=(1e-6, eTL))
     emwall = sol_infl.x[0]
     cs2_wall = cs2_minus(emwall)
     if cs2_wall < 0:
-        print(f"[DEBUG] cs2_wall < 0, returning NaN (xiw={xiw})")
         return np.nan, np.nan, np.nan
-
 
     v_init = (xiw - np.sqrt(cs2_wall)) / (1.0 + xiw * (-np.sqrt(cs2_wall)))
     if v_init < 0:
@@ -178,47 +175,39 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
         cs2_wall = cs2_minus(emwall)
         v_init = (xiw - np.sqrt(cs2_wall)) / (1.0 + xiw * (-np.sqrt(cs2_wall)))
         if cs2_minus(sol_infl.x[0]) < xiw**2:
-            print(f"[DEBUG] cs2_minus(sol_infl.x[0]) < xiw**2, returning NaN (xiw={xiw})")
             return np.nan, np.nan, np.nan
 
-
     if abs(v_init) < 1e-10:
-        print(f"[DEBUG] abs(v_init) < 1e-10, returning NaN (xiw={xiw})")
         return np.nan, np.nan, np.nan
 
     init_point = [v_init, xiw, emwall]
-
     flow_bw = solve_ivp(system_minus, (0, -100), init_point,
                         t_eval=np.linspace(0, -100, 1000),
-                        args=(pminus, cs2_minus, eTL, p0),
+                        args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus),
                         method='RK45', rtol=1e-8, atol=1e-10)
     flow_fw = solve_ivp(system_minus, (0, 100), init_point,
                         t_eval=np.linspace(0, 100, 1000),
-                        args=(pminus, cs2_minus, eTL, p0),
+                        args=(pminus, cs2_minus, eTL, p0), events=_edge_events(cs2_minus),
                         method='RK45', rtol=1e-8, atol=1e-10)
 
     v_flow  = np.concatenate((np.flip(flow_bw.y[0]), flow_fw.y[0]))
     xi_flow = np.concatenate((np.flip(flow_bw.y[1]), flow_fw.y[1]))
     e_flow  = np.concatenate((np.flip(flow_bw.y[2]), flow_fw.y[2]))
 
-
     breaks = np.where(np.diff(xi_flow) < 0)[0]
     if len(breaks) > 0:
         last = breaks[0]
         if abs(v_flow[last]) > 1e-6:
-            print(f"[DEBUG] abs(v_flow[last]) > 1e-6, returning NaN (xiw={xiw})")
             return np.nan, np.nan, np.nan
 
     xi_u, idx_u = np.unique(xi_flow, return_index=True)
     v_u = v_flow[idx_u];  e_u = e_flow[idx_u]
     sel = xi_u <= 1.0
-    # Return nans if there are only 1 element in the lists #
+    # A spline needs at least two points
     if np.sum(sel) < 2:
-        print(f"[DEBUG] Not enough points in sel (np.sum(sel)={np.sum(sel)}), returning NaN (xiw={xiw})")
         return np.nan, np.nan, np.nan
     v_int = CubicSpline(xi_u[sel], v_u[sel])
     e_int = CubicSpline(xi_u[sel], e_u[sel])
-
 
     for xi_cur in np.flip(np.linspace(xiw, 1.0, 500)):
         if xi_cur <= xiw or xi_cur > max(xi_u) or e_int(xi_cur) < eTH:
@@ -231,12 +220,10 @@ def limiting_detonation_contour_finder(xiw, pplus, pminus, eTH, eTL, p0, p1,
         )
         xi_sh, eN = sol.x
         res = j_system_shock_dets(sol.x, v_int, e_int, pplus, pminus, eTH, eTL, p0, p1)
-        #print(f"xiw: {xiw}, Res: {res}, xi_sh: {xi_sh}, eN: {eN}, e_int(xi_sh): {e_int(xi_sh)}, eTH: {eTH}")
         if (np.mean(np.array(res)**2) < 1e-12 and xi_sh > xiw
                 and xi_sh <= max(xi_u) and eN >= eTH and xi_sh <= 1 - 2e-5):
             return float(xi_sh), float(eN), float(min(e_u))
 
-    #print(f"[DEBUG] No valid contour found, returning NaN (xiw={xiw})")
     return np.nan, np.nan, np.nan
 
 
