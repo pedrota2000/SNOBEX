@@ -9,3 +9,8 @@ __pycache__/
 *.ipynb_checkpoints/
 Data_holo/
 analyze_data/
+
+# Claude Code
+CLAUDE.md
+CLAUDE.local.md
+.claude/
