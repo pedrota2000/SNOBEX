@@ -19,7 +19,7 @@ import os
 from scipy.optimize import fsolve
 from scipy.interpolate import CubicSpline
 
-from .eos import pplus as _pplus_analytic, pminus as _pminus_analytic
+from .eos import Branch, pplus as _pplus_analytic, pminus as _pminus_analytic
 from .hydrodynamics import (
     find_shocked_detonation, find_shocked_detonation_jouguet,
     shocked_detonation_strip, system_minus, find_deto, find_def, find_hyb,
@@ -167,6 +167,18 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
         e_minus  = np.linspace(0.0, eTL * 1.1, 5000)
         p_minus  = pminus(e_minus, eTL, p0)
         cs2_minus = CubicSpline(e_minus, np.gradient(p_minus, e_minus))
+
+    # ------------------------------------------------------------------
+    # The two phases.  Supercooled transition: the LT bubble grows into the
+    # metastable HT phase.  The solvers below take the individual callables,
+    # which are passed on from the branches.
+    # ------------------------------------------------------------------
+    outside = Branch('HT', p=lambda e, f=pplus: f(e, eTH, p1), cs2=cs2_plus,
+                     e_turn=eTH, up=True, s=splus, T=tplus)
+    inside = Branch('LT', p=lambda e, f=pminus: f(e, eTL, p0), cs2=cs2_minus,
+                    e_turn=eTL, up=False, s=sminus, T=tminus)
+    pplus, pminus = outside.pressure, inside.pressure
+    cs2_plus, cs2_minus = outside.cs2, inside.cs2
 
     # ------------------------------------------------------------------
     # Inflection-point equation (needed for hybrid separators)

@@ -16,13 +16,19 @@ Four solution types are supported:
 
 The module also exports the relativistic fluid ODE ``system_minus``
 and all junction-condition residuals so that callers can construct
-custom solvers.
+custom solvers.  The building blocks ``junction_residual``,
+``integrate_flow``, ``inside_state_at_wall``, ``outside_state_at_wall``
+and ``pressure_balance_energy`` work on ``Branch`` objects for the phases
+outside and inside the bubble, so they serve supercooled and superheated
+transitions alike.
 """
 
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.interpolate import CubicSpline
 from scipy.optimize import fsolve, least_squares, brentq
+
+from .eos import Branch
 
 
 _DEF_RESIDUAL_TOL = 1e-4
@@ -206,6 +212,122 @@ def entropy_JC_def_wall(vpemep, vm, pplus, pminus, eHT, eLT, p0, p1, splus, smin
 
 
 # ---------------------------------------------------------------------------
+# Building blocks on Branch objects (outside / inside phase)
+# ---------------------------------------------------------------------------
+
+def _legacy_branches(pplus, pminus, eTH, eTL, p0, p1, cs2_plus=None, cs2_minus=None):
+    """Outside (HT) and inside (LT) branches of a supercooled transition, built
+    from the individual callables the solvers below take."""
+    outside = Branch('HT', p=lambda e: pplus(e, eTH, p1), cs2=cs2_plus,
+                     e_turn=eTH, up=True)
+    inside = Branch('LT', p=lambda e: pminus(e, eTL, p0), cs2=cs2_minus,
+                    e_turn=eTL, up=False)
+    return outside, inside
+
+
+def junction_residual(vp, ep, vm, em, outside, inside):
+    """Energy–momentum conservation across a wall between the ``outside``
+    state (vp, ep) and the ``inside`` state (vm, em), in the wall frame."""
+    return _jc_residual(vp, vm, ep, em, outside.p(ep), inside.p(em))
+
+
+def integrate_flow(branch, y0, t_eval, **kwargs):
+    """
+    Integrate the self-similar flow equations on ``branch`` from
+    y0 = [v, xi, e] over ``t_eval``, stopping at the edge of a tabulated
+    branch.  Extra keyword arguments are passed to ``solve_ivp``.
+    """
+    return solve_ivp(system_minus, (t_eval[0], t_eval[-1]), y0, t_eval=t_eval,
+                     args=(branch.pressure, branch.cs2, branch.e_turn, None),
+                     events=_edge_events(branch.cs2), **kwargs)
+
+
+def inside_state_at_wall(outside, inside, e_out, vp, guesses, v_bounds=(-1.0, 0.0)):
+    """
+    State (vm, em) on the ``inside`` branch just behind a wall whose outside
+    state is (vp, e_out), or None if the junction conditions have no
+    solution on that branch.  Each guess (vm, em) seeds ``least_squares``.
+    """
+    sol_m = res = None
+    for guess in guesses:
+        try:
+            sol = least_squares(
+                lambda x: junction_residual(vp, e_out, x[0], x[1], outside, inside),
+                guess, bounds=([v_bounds[0], inside.e_lo], [v_bounds[1], inside.e_hi]),
+                ftol=1e-12, xtol=1e-12)
+        except Exception:
+            continue
+        sol_m = sol.x
+        res = junction_residual(vp, e_out, sol.x[0], sol.x[1], outside, inside)
+        if (not np.any(np.isnan(res))) and np.mean(np.array(res)**2) < 1e-8:
+            break
+
+    if sol_m is None or np.isnan(sol_m).any() or np.mean(np.array(res)**2) > 1e-10:
+        return None
+    return sol_m
+
+
+def outside_state_at_wall(outside, inside, e_in, vm, guesses, v_bounds,
+                          tol=_DEF_RESIDUAL_TOL):
+    """
+    State (vp, ep) on the ``outside`` branch just in front of a wall whose
+    inside state is (vm, e_in), or None.  Each guess (vp, ep) seeds
+    ``least_squares``; the first converged solution on the branch with
+    vp != 0 is returned.
+    """
+    for guess in guesses:
+        sol = least_squares(
+            lambda x: junction_residual(x[0], x[1], vm, e_in, outside, inside),
+            guess, bounds=([v_bounds[0], outside.e_lo], [v_bounds[1], outside.e_hi]))
+        vp, ep = sol.x
+        res = junction_residual(vp, ep, vm, e_in, outside, inside)
+        if not (np.any(np.isnan(res)) or np.mean(np.array(res)**2) > tol
+                or ep < outside.e_lo or ep > outside.e_hi or abs(vp) < 1e-15):
+            return vp, ep
+    return None
+
+
+def pressure_balance_energy(outside, inside):
+    """
+    Energy on the ``outside`` branch whose pressure equals that of the
+    ``inside`` branch at its turning point, searched from the outside
+    turning point into the branch.  NaN if the outside pressure is undefined.
+    """
+    target = inside.p(inside.e_turn)
+    if not np.isfinite(target):
+        return np.nan
+
+    e0 = float(outside.e_turn)
+    if outside.up:
+        e_scan = np.linspace(max(e0, 1e-10),
+                             max(e0 * 20.0, float(inside.e_turn) * 20.0, e0 + 10.0), 2000)
+        clamp = lambda e: max(e, e0 + 1e-9)
+    else:
+        e_scan = np.linspace(e0, float(outside.e_lo), 2000)
+        clamp = lambda e: min(e, e0 - 1e-9)
+    p_scan = np.asarray(outside.p(e_scan), dtype=float)
+    finite = np.isfinite(p_scan)
+
+    if not np.any(finite):
+        return np.nan
+
+    ef = e_scan[finite]
+    ff = target - p_scan[finite]
+    sign_change = np.where(np.sign(ff[:-1]) * np.sign(ff[1:]) <= 0)[0]
+
+    if sign_change.size > 0:
+        i = int(sign_change[0])
+        a, b = sorted((float(ef[i]), float(ef[i + 1])))
+        try:
+            return clamp(float(brentq(lambda e: target - float(outside.p(e)), a, b)))
+        except Exception:
+            pass
+
+    i_best = int(np.nanargmin(np.abs(ff)))
+    return clamp(float(ef[i_best]))
+
+
+# ---------------------------------------------------------------------------
 # Monotonic-segment helper
 # ---------------------------------------------------------------------------
 
@@ -383,8 +505,8 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
     if np.ndim(eC) > 0:
         em = eC.item()
 
-    from .hydrodynamics import _e_max_from_pressure  # lazy local helper
-    e_max = _e_max_from_pressure(eTH, eTL, p0, p1, pminus, pplus)
+    outside, inside = _legacy_branches(pplus, pminus, eTH, eTL, p0, p1)
+    e_max = pressure_balance_energy(outside, inside)
 
     if not np.isfinite(e_max) or e_max <= eTH:
         return np.nan, np.nan
@@ -392,23 +514,13 @@ def find_def(eC, xiw, pplus, pminus, eTH, eTL, p0, p1, cs2_plus, cs2_minus):
     if np.sqrt(cs2_minus(em)) < xiw or cs2_minus(em) < 0:
         return np.nan, np.nan
 
-    sol = least_squares(j_system_plus,
-                        [-xiw * 0.1, eTH + (e_max - eTH) / 2.0],
-                        args=(vm, em, pplus, pminus, eTH, eTL, p0, p1),
-                        bounds=([-xiw, eTH], [0, np.inf]))
-    vp, ep = sol.x
-    res = j_system_plus([vp, ep], vm, em, pplus, pminus, eTH, eTL, p0, p1)
-    if np.any(np.isnan(res)) or np.mean(np.array(res)**2) > _DEF_RESIDUAL_TOL or \
-            ep < eTH or abs(vp) < 1e-15:
-        sol = least_squares(j_system_plus,
-                            [-xiw * 0.9, eTH * 1.05],
-                            args=(vm, em, pplus, pminus, eTH, eTL, p0, p1),
-                            bounds=([-xiw, eTH], [0, np.inf]))
-        vp, ep = sol.x
-        res = j_system_plus([vp, ep], vm, em, pplus, pminus, eTH, eTL, p0, p1)
-        if np.any(np.isnan(res)) or np.mean(np.array(res)**2) > _DEF_RESIDUAL_TOL or \
-                ep < eTH or abs(vp) < 1e-15:
-            return np.nan, np.nan
+    wall = outside_state_at_wall(
+        outside, inside, em, vm,
+        guesses=[(-xiw * 0.1, eTH + (e_max - eTH) / 2.0), (-xiw * 0.9, eTH * 1.05)],
+        v_bounds=(-xiw, 0))
+    if wall is None:
+        return np.nan, np.nan
+    vp, ep = wall
 
     init_point = np.array([(vp + xiw) / (1.0 + xiw * vp), xiw, ep])
     dxi_dt = xiw * ((xiw - init_point[0])**2
@@ -869,24 +981,9 @@ def _detonation_wall_state(eN, xiw, pplus, pminus, eTH, eTL, p0, p1):
     the HT phase at rest with energy ``eN``, or None if the junction
     conditions have no solution on the LT branch.
     """
-    vp = -xiw
-    sol_m = res = None
-    for guess in [(-0.9, eTL * 0.2), (-0.5 * xiw, eTL * 0.5)]:
-        try:
-            sol = least_squares(j_system_minus, guess,
-                                args=(vp, eN, pplus, pminus, eTH, eTL, p0, p1),
-                                bounds=([-1, 0.0], [0, eTL]),
-                                ftol=1e-12, xtol=1e-12)
-        except Exception:
-            continue
-        sol_m = sol.x
-        res = j_system_minus(sol.x, vp, eN, pplus, pminus, eTH, eTL, p0, p1)
-        if (not np.any(np.isnan(res))) and np.mean(np.array(res)**2) < 1e-8:
-            break
-
-    if sol_m is None or np.isnan(sol_m).any() or np.mean(np.array(res)**2) > 1e-10:
-        return None
-    return sol_m
+    outside, inside = _legacy_branches(pplus, pminus, eTH, eTL, p0, p1)
+    return inside_state_at_wall(outside, inside, eN, -xiw,
+                                guesses=[(-0.9, eTL * 0.2), (-0.5 * xiw, eTL * 0.5)])
 
 
 def shocked_detonation_strip(eN, pplus, pminus, eTH, eTL, p0, p1,
@@ -1134,33 +1231,4 @@ def find_shocked_detonation_jouguet(eN, xiw, pplus, pminus, eTH, eTL, p0, p1,
 
 def _e_max_from_pressure(eTH, eTL, p0, p1, pminus, pplus):
     """Return e where p−(eTL) = p+(e), using finite-domain bracketing."""
-
-    target = pminus(eTL, eTL, p0) if p0 is not None else pminus(eTL, eTL)
-    if not np.isfinite(target):
-        return np.nan
-
-    e_start = max(float(eTH), 1e-10)
-    e_stop = max(float(eTH) * 20.0, float(eTL) * 20.0, float(eTH) + 10.0)
-    e_scan = np.linspace(e_start, e_stop, 2000)
-    p_scan = np.asarray(pplus(e_scan, eTH, p1), dtype=float)
-    finite = np.isfinite(p_scan)
-
-    if not np.any(finite):
-        return np.nan
-
-    ef = e_scan[finite]
-    ff = target - p_scan[finite]
-    sign_change = np.where(np.sign(ff[:-1]) * np.sign(ff[1:]) <= 0)[0]
-
-    if sign_change.size > 0:
-        i = int(sign_change[0])
-        a = float(ef[i])
-        b = float(ef[i + 1])
-        try:
-            root = brentq(lambda e: target - float(pplus(e, eTH, p1)), a, b)
-            return max(float(root), float(eTH) + 1e-9)
-        except Exception:
-            pass
-
-    i_best = int(np.nanargmin(np.abs(ff)))
-    return max(float(ef[i_best]), float(eTH) + 1e-9)
+    return pressure_balance_energy(*_legacy_branches(pplus, pminus, eTH, eTL, p0, p1))

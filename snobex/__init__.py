@@ -10,7 +10,7 @@ def print_logo():
     """)
 
 
-from .eos import pplus, pminus, speed_of_sound_squared, load_custom_eos
+from .eos import Branch, pplus, pminus, speed_of_sound_squared, load_custom_eos
 from .thermodynamics import (
     entropy_ODE_plus,
     entropy_ODE_minus,
@@ -27,6 +27,7 @@ from .hydrodynamics import (
 from .plotting import interactive_bubble_plot
 
 __all__ = [
+    "Branch",
     "pplus",
     "pminus",
     "speed_of_sound_squared",

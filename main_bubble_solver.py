@@ -56,7 +56,7 @@ CONTOUR_RESOLUTION = 150  # Resolution for separator/contour lines
 # ---------------------------------------------------------------------------
 # Optional: path to a custom EoS file (set to None to use analytic model)
 # ---------------------------------------------------------------------------
-CUSTOM_EOS_FILE    = None          # e.g.  "Data_holo/thermo_phiM1.txt"
+CUSTOM_EOS_FILE    =  None          # e.g.  "Data_holo/thermo_phiM1.txt"
 CUSTOM_EOS_COLUMNS = (0, 1, 2, 3)  # columns of (T, p, e, s); (0, 6, 7, 1) for thermo_phiM*.txt;
                                    # None for T and s rebuilds them from p(e), e.g. (None, 1, 0, None)
 CUSTOM_EOS_IDX_MIN = 0             # rows to skip at the high-energy end of the table

@@ -11,12 +11,66 @@ Two analytic parametrisations are provided:
 A helper ``speed_of_sound_squared`` wraps both into a uniform callable
 and ``load_custom_eos`` allows replacing the analytic models with
 tabulated data read from a file, split into its HT and LT branches.
+
+``Branch`` bundles everything the solvers need about one phase.
 """
+
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import CubicSpline, interp1d, PchipInterpolator
 from scipy.optimize import brentq
+
+
+# ---------------------------------------------------------------------------
+# One phase of the EoS
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Branch:
+    """
+    One phase (branch) of the equation of state.
+
+    The branch starts at its turning point ``e_turn`` (the spinodal, where
+    c_s² = 0) and extends from it upwards in energy (``up=True``, like the
+    HT phase) or downwards (like the LT phase).  ``e_lo`` and ``e_hi`` bound
+    the energies the solvers may use on it: by default [e_turn, inf) going
+    up and [0, e_turn] going down.  Tabulated branches also return NaN
+    outside their table.
+
+    A supercooled transition has the LT phase inside the bubble and the
+    metastable HT phase outside; a superheated one swaps them.
+
+    Attributes
+    ----------
+    name   : str       Label, e.g. 'HT' or 'LT'.
+    p      : callable  Pressure p(e).
+    cs2    : callable  c_s²(e); must accept ``nu=1`` for its derivative.
+    e_turn : float     Turning-point energy.
+    up     : bool      True if the branch extends above ``e_turn``.
+    s, T   : callable  Entropy density s(e) and temperature T(e), if known.
+    """
+    name: str
+    p: Callable
+    cs2: Optional[Callable]
+    e_turn: float
+    up: bool
+    s: Optional[Callable] = None
+    T: Optional[Callable] = None
+    e_lo: Optional[float] = None
+    e_hi: Optional[float] = None
+
+    def __post_init__(self):
+        if self.e_lo is None:
+            self.e_lo = self.e_turn if self.up else 0.0
+        if self.e_hi is None:
+            self.e_hi = np.inf if self.up else self.e_turn
+
+    def pressure(self, e, *args, **kwargs):
+        """p(e) with the call signature of the analytic p± (extra arguments ignored)."""
+        return self.p(e)
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +287,11 @@ def load_custom_eos(filepath, columns=(0, 1, 2, 3), idx_min=0, n_branch=100000,
 
     roots = _cs2_roots(spl_cs2, len(e))
     if len(roots) < 2:
-        raise ValueError("Custom EoS: could not find two c_s² = 0 turning points.")
+        raise ValueError(
+            f"Custom EoS: could not find two c_s² = 0 turning points in '{filepath}'. "
+            f"Check that columns={columns} are the (T, p, e, s) columns of this file "
+            "(e.g. (0, 6, 7, 1) for thermo_phiM*.txt) and that it covers the whole curve."
+        )
     eTH_idx = roots[0]
     eTL_idx = roots[1:][np.argmax(spl_T(roots[1:]))]
 
@@ -304,3 +362,4 @@ def load_custom_eos(filepath, columns=(0, 1, 2, 3), idx_min=0, n_branch=100000,
         'splus': splus, 'sminus': sminus,
         'tplus': tplus, 'tminus': tminus,
     }
+
