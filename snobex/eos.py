@@ -21,7 +21,7 @@ from typing import Callable, Optional
 import numpy as np
 from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import CubicSpline, interp1d, PchipInterpolator
-from scipy.optimize import brentq
+from scipy.optimize import brentq, fsolve
 
 
 # ---------------------------------------------------------------------------
@@ -362,4 +362,55 @@ def load_custom_eos(filepath, columns=(0, 1, 2, 3), idx_min=0, n_branch=100000,
         'splus': splus, 'sminus': sminus,
         'tplus': tplus, 'tminus': tminus,
     }
+
+
+# ---------------------------------------------------------------------------
+# Branch builders
+# ---------------------------------------------------------------------------
+
+def analytic_branches(eTH, eTL, p1=0.0, n=4.0, delta=1.0,
+                      splus=None, sminus=None, tplus=None, tminus=None):
+    """
+    HT and LT branches of the analytic model, with c_s² built as in
+    ``interactive_bubble_plot`` (a spline of dp/de).  Entropy and temperature
+    are optional; for the analytic model they come from the entropy ODEs in
+    ``snobex.thermodynamics``.
+
+    Returns
+    -------
+    (ht, lt) : Branch, Branch
+    """
+    pp = lambda e: pplus(e, eTH, p1, delta)
+    pm = lambda e: pminus(e, eTL, n)
+    e_max = 2.0 * fsolve(lambda e: pm(eTL) - pp(e), eTL * 2 if eTL > eTH else eTH * 5)[0]
+    e_ht = np.linspace(eTH * 0.9, e_max * 5, 5000)
+    e_lt = np.linspace(0.0, eTL * 1.1, 5000)
+    ht = Branch('HT', p=pp, cs2=CubicSpline(e_ht, np.gradient(pp(e_ht), e_ht)),
+                e_turn=eTH, up=True, s=splus, T=tplus)
+    lt = Branch('LT', p=pm, cs2=CubicSpline(e_lt, np.gradient(pm(e_lt), e_lt)),
+                e_turn=eTL, up=False, s=sminus, T=tminus)
+    return ht, lt
+
+
+def load_custom_branches(filepath, **kwargs):
+    """
+    Like ``load_custom_eos``, but return the two phases as ``Branch`` objects,
+    each limited to the energies covered by the table.  Keyword arguments are
+    those of ``load_custom_eos``.
+
+    Returns
+    -------
+    (ht, lt) : Branch, Branch
+    """
+    return branches_from_custom_eos(load_custom_eos(filepath, **kwargs))
+
+
+def branches_from_custom_eos(eos):
+    """(HT, LT) ``Branch`` objects from the dict returned by ``load_custom_eos``."""
+    cs2_ht, cs2_lt = eos['custom_cs2_plus'], eos['custom_cs2_minus']
+    ht = Branch('HT', p=eos['custom_pplus'], cs2=cs2_ht, e_turn=eos['eTH'], up=True,
+                s=eos['splus'], T=eos['tplus'], e_hi=float(cs2_ht.x[-1]))
+    lt = Branch('LT', p=eos['custom_pminus'], cs2=cs2_lt, e_turn=eos['eTL'], up=False,
+                s=eos['sminus'], T=eos['tminus'], e_lo=float(cs2_lt.x[0]))
+    return ht, lt
 

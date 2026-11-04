@@ -10,21 +10,30 @@ def print_logo():
     """)
 
 
-from .eos import Branch, pplus, pminus, speed_of_sound_squared, load_custom_eos
+from .eos import (
+    Branch,
+    pplus,
+    pminus,
+    speed_of_sound_squared,
+    load_custom_eos,
+    analytic_branches,
+    load_custom_branches,
+    branches_from_custom_eos,
+)
 from .thermodynamics import (
     entropy_ODE_plus,
     entropy_ODE_minus,
     calculate_temperature,
     find_critical_temperature,
 )
-from .hydrodynamics import (
+from .supercooled import (
     find_deto,
     find_def,
     find_hyb,
     find_shocked_detonation,
     find_shocked_detonation_jouguet,
 )
-from .plotting import interactive_bubble_plot
+from .plotting import interactive_bubble_plot, superheated_bubble_plot
 
 __all__ = [
     "Branch",
@@ -32,6 +41,9 @@ __all__ = [
     "pminus",
     "speed_of_sound_squared",
     "load_custom_eos",
+    "analytic_branches",
+    "load_custom_branches",
+    "branches_from_custom_eos",
     "print_logo",
     "entropy_ODE_plus",
     "entropy_ODE_minus",
@@ -43,4 +55,5 @@ __all__ = [
     "find_shocked_detonation",
     "find_shocked_detonation_jouguet",
     "interactive_bubble_plot",
+    "superheated_bubble_plot",
 ]

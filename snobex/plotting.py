@@ -1,18 +1,20 @@
 """
 snobex.plotting
 ================
-Interactive phase-space bubble plot for snobex.
+Interactive phase-space bubble plots for snobex.
 
-The main entry point is ``interactive_bubble_plot``.  It computes all
+``interactive_bubble_plot`` (supercooled transitions) computes all
 separator curves and hydrodynamic flows, then displays a live
 matplotlib figure where clicking on any point shows the corresponding
-velocity and energy profiles.
+velocity and energy profiles.  ``superheated_bubble_plot`` does the same
+for superheated transitions, so far with inverse deflagrations only.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import concurrent.futures
+import functools
 import pickle
 import os
 
@@ -20,12 +22,13 @@ from scipy.optimize import fsolve
 from scipy.interpolate import CubicSpline
 
 from .eos import Branch, pplus as _pplus_analytic, pminus as _pminus_analytic
-from .hydrodynamics import (
+from .hydrodynamics import system_minus
+from .supercooled import (
     find_shocked_detonation, find_shocked_detonation_jouguet,
-    shocked_detonation_strip, system_minus, find_deto, find_def, find_hyb,
+    shocked_detonation_strip, find_deto, find_def, find_hyb,
     _e_max_from_pressure
 )
-from .separators import (
+from .supercooled_separators import (
     compute_def_separator,
     compute_det_separator,
     compute_hyb_separator,
@@ -38,6 +41,14 @@ from .separators import (
     eC_contour_finder,
     entropy_checker,
 )
+from .superheated import (
+    scan_inverse_deflagrations,
+    superheated_window,
+    inverse_def_entropy_ratio,
+    alpha_n,
+    _ec_grid,
+)
+from .superheated_separators import inverse_jouguet_contour_finder
 
 
 def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energies_allowed,
@@ -626,6 +637,191 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
     return fig_det, ax_det
 
 
+def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25,
+                            contour_resolution=100, xiw_range=None, ec_range=None,
+                            saving=False, output_dir="."):
+    """
+    Interactive phase-space plot of a superheated transition: a bubble of the
+    ``inside`` (HT) phase expanding into the metastable ``outside`` (LT)
+    phase.  Same layout and conventions as ``interactive_bubble_plot``; so far
+    it contains the inverse deflagrations.  Those that violate the entropy
+    condition at the wall are marked with black stars.
+
+    Parameters
+    ----------
+    outside, inside : Branch  LT and HT branches; their s and T are needed
+                              for the entropy condition, alpha_N and T_c.
+    xiw_resolution, en_resolution : int  Grid laid over the solution region.
+    contour_resolution : int  Points along each separator (default 100).
+    xiw_range, ec_range : (lo, hi), optional
+        Ranges searched for solutions.  By default xi_w runs up to the
+        largest sound speed of the inside phase and E_C from the inside
+        turning point to 6 times it (capped at the table top).
+    saving : bool  Pickle the results to ``output_dir`` (default False).
+    output_dir : str  Directory for output files (default current directory).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax  : matplotlib.axes.Axes  (the (ξ_w, E_N) axis)
+    """
+    Tc, e_out_Tc, e_in_Tc = superheated_window(outside, inside)
+    if ec_range is None:
+        ec_range = (inside.e_turn * 1.001, min(inside.e_hi, 6.0 * inside.e_turn))
+    if xiw_range is None:
+        cs2 = np.asarray(inside.cs2(np.linspace(*ec_range, 200)), dtype=float)
+        cs_max = float(np.sqrt(np.nanmax(cs2))) if np.isfinite(cs2).any() else 0.99
+        xiw_range = (0.003, min(0.99, cs_max))
+    print(f"[snobex] Superheated: T_c = {Tc:.4g}, allowed E_N in [{e_out_Tc:.4g}, {outside.e_turn:.4g}]"
+          if e_out_Tc is not None else "[snobex] Superheated: no T_c found")
+
+    results_dict = {
+        'EoS_parameters': {'eTL': outside.e_turn, 'eTH': inside.e_turn, 'Tc': Tc,
+                           'transition': 'superheated'},
+        'Global_contours': {},
+        'Local_contours': {},
+        'Hydro_flows': {},
+    }
+    _alphan = functools.lru_cache(maxsize=None)(lambda eN: alpha_n(float(eN), outside, inside))
+
+    # ------------------------------------------------------------------
+    # Figure scaffold (as in interactive_bubble_plot)
+    # ------------------------------------------------------------------
+    fig_det = plt.figure(figsize=(10, 8))
+    gs = gridspec.GridSpec(2, 2, height_ratios=[1, 1.3], hspace=0.3, wspace=0.2)
+    ax_det   = fig_det.add_subplot(gs[0, 0])
+    ax_C     = fig_det.add_subplot(gs[0, 1])
+    ax_alpha = fig_det.add_subplot(gs[1, :])
+
+    for ax, xlabel, ylabel in [
+        (ax_det,   r'$\xi_w$', r'$\mathcal{E}_N$'),
+        (ax_C,     r'$\xi_w$', r'$\mathcal{E}_C$'),
+        (ax_alpha, r'$\xi_w$', r'$\alpha_N$'),
+    ]:
+        ax.set_xlabel(xlabel);  ax.set_ylabel(ylabel);  ax.grid(True)
+    ax_det.set_xlim(-0.01, 1.01)
+    fig_det.suptitle("Computing separators…")
+    plt.show(block=False)
+    fig_det.canvas.draw(); fig_det.canvas.flush_events()
+
+    # ------------------------------------------------------------------
+    # Separator curves
+    # ------------------------------------------------------------------
+    # Inverse Jouguet deflagrations: the fastest walls with the centre at rest
+    fig_det.suptitle("Computing inverse Jouguet deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    eC_jouguet = _ec_grid(outside, inside, ec_range, contour_resolution)
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        results = list(ex.map(
+            lambda eC: inverse_jouguet_contour_finder(eC, outside, inside), eC_jouguet))
+    j_xiw = np.array([r[0] for r in results], dtype=float)
+    j_eN  = np.array([r[1] for r in results], dtype=float)
+    mask = ~np.isnan(j_xiw) & ~np.isnan(j_eN)
+    j_xiw, j_eN, j_eC = j_xiw[mask], j_eN[mask], eC_jouguet[mask]
+    ax_det.plot(j_xiw, j_eN, '--b', lw=2)
+    ax_C.plot(j_xiw, j_eC, '--b', lw=2)
+    ax_alpha.plot(j_xiw, np.array(list(map(_alphan, j_eN))), '--b', lw=2)
+    results_dict['Local_contours']['inverse_jouguet'] = {
+        'xi': j_xiw, 'eC': j_eC, 'eN': j_eN,
+        'alpha': np.array(list(map(_alphan, j_eN)))}
+
+    fig_det.suptitle("Computing inverse deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+
+    # ------------------------------------------------------------------
+    # Progress bar
+    # ------------------------------------------------------------------
+    bh, by = 0.015, 0.94
+    ax_bar = fig_det.add_axes([0.15, by, 0.7, bh])
+    ax_bar.set_xticks([]);  ax_bar.set_yticks([])
+    ax_bar.set_xlim(0, 1);  ax_bar.set_ylim(0, 1)
+    bar_rect = ax_bar.barh([0.5], [0], height=1.0, color='blue')[0]
+    ax_bar.text(-0.02, 0.5, "Inverse def.", va='center', ha='right', fontsize=8,
+                transform=ax_bar.transAxes)
+    bar_pct = ax_bar.text(1.02, 0.5, "0%", va='center', ha='left', fontsize=8,
+                          transform=ax_bar.transAxes)
+
+    def _progress(done, total):
+        bar_rect.set_width(done / total)
+        bar_pct.set_text(f"{done / total * 100:.1f}%")
+        fig_det.canvas.draw_idle();  fig_det.canvas.flush_events()
+
+    # ------------------------------------------------------------------
+    # Inverse deflagrations
+    # ------------------------------------------------------------------
+    rows = scan_inverse_deflagrations(outside, inside, xiw_range, ec_range,
+                                      xiw_resolution, en_resolution, progress=_progress)
+    ax_bar.remove()
+    fig_det.suptitle(None)
+    inverse_deflagration_flows = [(xiw, eN, eC, flow[0], flow[1], flow[2])
+                                  for xiw, eC, eN, flow in rows]
+    print(f"[snobex] {len(inverse_deflagration_flows)} inverse deflagrations")
+    _batch_plot(ax_det, ax_C, ax_alpha, inverse_deflagration_flows, 'bo',
+                'Inverse deflagration', 4, _alphan)
+
+    # ------------------------------------------------------------------
+    # Allowed energies: superheated outside phase, inside phase above T_c
+    # ------------------------------------------------------------------
+    if e_out_Tc is not None:
+        ax_det.axhspan(e_out_Tc, outside.e_turn, color='orange', alpha=0.2,
+                       label=r'Allowed $\mathcal{E}_N$')
+    if e_in_Tc is not None and inverse_deflagration_flows:
+        eC_found = np.array([r[2] for r in inverse_deflagration_flows])
+        top = max(e_in_Tc, eC_found.max())
+        ax_C.axhspan(e_in_Tc, top + 0.05 * (top - eC_found.min()), color='green', alpha=0.2,
+                     label=r'Allowed $\mathcal{E}_C$')
+
+    # ------------------------------------------------------------------
+    # Entropy condition at the wall
+    # ------------------------------------------------------------------
+    ratio = np.array([inverse_def_entropy_ratio(r[2], r[0], r[3:6], outside, inside)
+                      for r in inverse_deflagration_flows])
+    bad = [r for r, x in zip(inverse_deflagration_flows, ratio) if np.isfinite(x) and x < 1.0]
+    if bad:
+        _batch_plot(ax_det, ax_C, ax_alpha, bad, 'k*', 'Entropy violated', 2.5, _alphan)
+    results_dict['Hydro_flows']['inverse_deflagration'] = {
+        **_pack_flows(inverse_deflagration_flows, _alphan),
+        'entropy_ratio': ratio,
+    }
+
+    # ------------------------------------------------------------------
+    # Final plot decoration
+    # ------------------------------------------------------------------
+    for ax in (ax_det, ax_C, ax_alpha):
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend()
+    ax_det.set_title(
+        rf"Superheated Solutions for EoS $e_{{TL}}-e_{{TH}} = {outside.e_turn - inside.e_turn:.2f}$"
+        + "\n(Click on points to see flow details)"
+    )
+    # Inverse deflagrations occupy small xi_w: zoom the E_N panel like the others
+    ax_det.relim();  ax_det.autoscale(enable=True, axis='x')
+
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
+    if saving:
+        save_path = os.path.join(
+            output_dir,
+            f"snobex_results_superheated_{inside.e_turn:.3f}_{outside.e_turn:.3f}.pkl",
+        )
+        with open(save_path, 'wb') as f:
+            pickle.dump(results_dict, f)
+        print(f"[snobex] Results saved to '{save_path}'")
+
+    # ------------------------------------------------------------------
+    # Click handler
+    # ------------------------------------------------------------------
+    fig_det.canvas.mpl_connect(
+        'button_press_event',
+        lambda ev: _on_click(ev, ax_det, ax_C, ax_alpha,
+                             [], inverse_deflagration_flows, [], [],
+                             output_dir, _alphan,
+                             deflagration_label='Inverse deflagration'),
+    )
+
+    plt.show()
+    return fig_det, ax_det
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
@@ -686,7 +882,7 @@ def _entropy_overlay(ax_det, ax_C, ax_alpha, flows, bad_arr, marker, ms, alphan_
 
 def _on_click(event, ax_det, ax_C, ax_alpha,
               detonation_data, deflagration_data, hybrid_data, shocked_data,
-              output_dir, alphan_func):
+              output_dir, alphan_func, deflagration_label='Deflagration'):
     if event.inaxes not in (ax_det, ax_C, ax_alpha):
         return
     xiw_click = event.xdata
@@ -726,7 +922,7 @@ def _on_click(event, ax_det, ax_C, ax_alpha,
             ey = alphan_func(eN)
         d = np.hypot(xiw - xiw_click, ey - ey_click)
         if d < best_dist:
-            best_dist = d;  best_sol = row + (np.nan,);  best_type = 'Deflagration'
+            best_dist = d;  best_sol = row + (np.nan,);  best_type = deflagration_label
 
     for row in hybrid_data:
         xiw, eN, eC = row[0], row[1], row[2]

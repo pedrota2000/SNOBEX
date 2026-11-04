@@ -18,9 +18,12 @@ phase transitions, for a general equation of state.
 
 - Interactive EoS explorer with real-time thermodynamic plots (GUI),
   including the critical-temperature common-tangent construction on the
-  entropy–energy panel.
-- Full phase-space computation: detonations, deflagrations, hybrids, and
-  shocked detonations.
+  entropy–energy panel and α_N against the nucleation temperature, for
+  supercooled and superheated nucleation.
+- Full phase-space computation of supercooled transitions: detonations,
+  deflagrations, hybrids, and shocked detonations.
+- Superheated transitions (HT bubble expanding into the metastable LT
+  phase): inverse deflagrations so far.
 - Automatic separator curves for different type of solutions.
 - Click-to-inspect: click any point in the phase-space plot to display
   the corresponding velocity and energy profiles.
@@ -35,12 +38,24 @@ phase transitions, for a general equation of state.
 
 ## Solution types
 
+Supercooled transitions (LT bubble expanding into the metastable HT phase):
+
 - **Detonation** — supersonic wall with a rarefaction behind it.
 - **Deflagration** — subsonic wall with a shock ahead of it.
 - **Hybrid** — detonation wall preceded by a rarefaction in the LT phase.
 - **Shocked detonation** — detonation whose rarefaction is terminated by an
   additional shock inside the LT fluid (two discontinuities). Only the
   candidates that satisfy the entropy condition at the shock are retained.
+
+Superheated transitions (HT bubble expanding into the metastable LT phase):
+
+- **Inverse deflagration** — subsonic wall with the HT phase at rest inside;
+  in front of it a rarefaction in the LT phase with the fluid moving
+  inwards, which reaches rest at the sound cone.  Solutions are marked by
+  the entropy condition at the wall and by whether E_N lies in the
+  superheated window [e₋(T_c), e_TL].  They are bounded by the inverse
+  Jouguet curve (dashed blue), where the flow in front of the wall is
+  sonic; faster walls admit no junction state with the centre at rest.
 
 ---
 
@@ -60,14 +75,24 @@ and run scripts from its root directory.
 ```
 snobex/
     __init__.py          Package entry point and public API
-    eos.py               EoS models (pplus, pminus) and custom EoS loader
-    thermodynamics.py    Entropy ODEs, temperature, free energy, T_c
-    hydrodynamics.py     Junction conditions and flow solvers
-    separators.py        Phase-space separator and contour finders
-    plotting.py          Interactive phase-space bubble plot
+    eos.py                      EoS models, Branch (one phase), custom EoS loader
+    thermodynamics.py           Entropy ODEs, temperature, free energy, T_c
+    hydrodynamics.py            Shared: fluid equations, junction conditions,
+                                Branch-based building blocks
+    supercooled.py              Supercooled solutions (LT bubble in metastable HT)
+    supercooled_separators.py   Their separators and contours
+    superheated.py              Superheated solutions (HT bubble in metastable LT)
+    superheated_separators.py   Their separators (so far the inverse Jouguet curve)
+    plotting.py                 Interactive phase-space bubble plot (supercooled)
 
 main_eos_explorer.py     Interactive EoS explorer GUI (start here)
 main_bubble_solver.py    Standalone bubble phase-space solver
+scripts/
+    inverse_deflagration_profile.py   v(ξ) and e(ξ) of one inverse deflagration,
+                                      with ξ_w and E_C sliders and the wall states
+                                      on p(e); drawn also where find_inverse_def
+                                      rejects it, with the check that fails and a
+                                      map of the failing checks
 ```
 
 ---
@@ -81,8 +106,9 @@ python main_eos_explorer.py
 ```
 
 Use the sliders to tune the EoS parameters and watch the thermodynamic
-quantities update in real time.  Click **"Compute all bubbles"** to
-launch the full phase-space computation.
+quantities update in real time.  Click **"Supercooled bubbles"** to
+launch the full phase-space computation of the supercooled transition, or
+**"Superheated bubbles"** for the superheated one (inverse deflagrations).
 
 ### 2. Standalone bubble solver
 
@@ -192,7 +218,7 @@ p−(e) = (1/3) [ e − e^(n+1) / ((n+1) e_TL^n) ]
 
 ## Output files
 
-When `saving=True` (or clicking "Compute all bubbles" with the flag
+When `saving=True` (or clicking "Supercooled bubbles" with the flag
 enabled), results are saved as a pickle file:
 
 ```
