@@ -45,9 +45,11 @@ from .supercooled_separators import (
 from .superheated import (
     scan_inverse_deflagrations,
     scan_inverse_detonations,
+    scan_inverse_hybrids,
     superheated_window,
     inverse_def_entropy_jump,
     inverse_det_entropy_jump,
+    inverse_hyb_entropy_jump,
     alpha_n,
 )
 from .superheated_separators import (
@@ -55,6 +57,9 @@ from .superheated_separators import (
     limiting_inverse_def_contour_finder,
     spinodal_inverse_det_contour_finder,
     sonic_inverse_det_contour_finder,
+    inverse_hyb_obstruction_energies,
+    spinodal_inverse_hyb_contour_finder,
+    limiting_inverse_hyb_contour_finder,
     dcp_energy,
 )
 
@@ -652,15 +657,19 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     Interactive phase-space plot of a superheated transition: a bubble of the
     ``inside`` (HT) phase expanding into the metastable ``outside`` (LT)
     phase.  Same layout and conventions as ``interactive_bubble_plot``; so far
-    it contains the inverse deflagrations (blue) and inverse detonations
-    (red).  Those that violate the entropy condition at the wall are marked
+    it contains the inverse deflagrations (blue), inverse detonations (red)
+    and inverse hybrids (green).  Those that violate the entropy condition at
+    the wall are marked
     with black stars.  The separators have the styles of their supercooled
     counterparts: dashed blue, the inverse Jouguet deflagrations (as the
-    Jouguet detonations); dashed red, the limiting inverse deflagrations (as
-    the limiting detonations); dashed black, the slowest inverse detonations,
-    below which the junction conditions have no solution (as the detonation
-    separator), and the inverse detonations with xi_w = c_s,out(E_N), the
-    border with the inverse hybrids (as the deflagration separator).
+    Jouguet detonations); dashed red, the limiting inverse deflagrations and
+    the limiting inverse hybrids, flow obstructions at the DCP of the outside
+    phase (as the limiting detonations); dashed black, the wall obstruction
+    e- = e* (the inside state behind the wall at its turning point, below
+    which the junction conditions have no weak solution, as the detonation
+    separator): the slowest inverse detonations and the limiting inverse
+    hybrids of the wall obstruction; dashed magenta, the inverse detonations
+    with xi_w = c_s,out(E_N), the border with the inverse hybrids.
 
     Parameters
     ----------
@@ -775,6 +784,33 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
             'xi': l_xiw, 'eC': l_eC, 'eN': l_eN, 'e_star': e_star,
             'alpha': np.array(list(map(_alphan, l_eN)))}
 
+        # Limiting inverse hybrids: the same rarefaction from the point of rest,
+        # followed further in, to where it becomes sonic (the hybrid's wall).
+        # They exist only for xi0 in a narrow band just below c_s(e*): the even
+        # sweep finds it, then an even grid of the same size is laid over it
+        fig_det.suptitle("Computing limiting inverse hybrids (flow obstruction)…")
+        fig_det.canvas.draw(); fig_det.canvas.flush_events()
+        lim_hyb = lambda xi0: limiting_inverse_hyb_contour_finder(xi0, outside, inside, e_star=e_star)[:4]
+        has_hyb = lambda r: bool(np.all(np.isfinite(r)))
+        xi0_h = np.linspace(0.005 * c_star, 0.999 * c_star, contour_resolution * 10)
+        with concurrent.futures.ThreadPoolExecutor() as ex:
+            results = list(ex.map(lim_hyb, xi0_h))
+        ok = np.array([has_hyb(r) for r in results], dtype=bool)
+        if ok.any():
+            d = xi0_h[1] - xi0_h[0]
+            xi0_h = np.linspace(max(xi0_h[ok].min() - d, xi0_h[0]), min(xi0_h[ok].max() + d, 0.9999 * c_star),
+                                contour_resolution * 10)
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                results = list(ex.map(lim_hyb, xi0_h))
+            xi0_h, results = _refine_edges(lim_hyb, xi0_h, results, has_hyb)
+            g_xiw, g_eN, g_eC, g_ep = (np.array(col, dtype=float) for col in zip(*results))
+            g_alpha = np.array([_alphan(e) if np.isfinite(x) else np.nan for x, e in zip(g_xiw, g_eN)])
+            ax_det.plot(g_xiw, g_eN, '--r', lw=2)    # a flow obstruction, as the limiting detonations
+            ax_C.plot(g_xiw, g_eC, '--r', lw=2)
+            ax_alpha.plot(g_xiw, g_alpha, '--r', lw=2)
+            results_dict['Local_contours']['limiting_inverse_hybrid'] = {
+                'xi': g_xiw, 'eC': g_eC, 'eN': g_eN, 'alpha': g_alpha, 'ep': g_ep, 'e_star': e_star}
+
     # Slowest inverse detonations: the state behind the wall at the inside
     # turning point; slower walls have no junction state on the inside branch.
     # Where that wall is not supersonic with respect to the outside phase the
@@ -807,11 +843,38 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     c_xiw, c_eC = (np.array(col, dtype=float) for col in zip(*results))
     c_eN = np.asarray(eN_sonic, dtype=float)
     c_alpha = np.array([_alphan(e) if np.isfinite(x) else np.nan for x, e in zip(c_xiw, c_eN)])
-    ax_det.plot(c_xiw, c_eN, '--k')            # as the supercooled deflagration separator, xi_w = c_s(E_C)
-    ax_C.plot(c_xiw, c_eC, '--k')
-    ax_alpha.plot(c_xiw, c_alpha, '--k')
+    ax_det.plot(c_xiw, c_eN, '--m')            # its own colour: not the wall obstruction e- = e*
+    ax_C.plot(c_xiw, c_eC, '--m')
+    ax_alpha.plot(c_xiw, c_alpha, '--m')
     results_dict['Local_contours']['sonic_inverse_detonation'] = {
         'xi': c_xiw, 'eC': c_eC, 'eN': c_eN, 'alpha': c_alpha}
+
+    # Limiting inverse hybrids: the wall obstruction with a sonic front and the
+    # inside state behind the wall at its turning point.  Its roots e+* depend
+    # on the EoS alone (none: no inverse hybrids at all); each gives a curve
+    # swept in xi_w, NaN where that hybrid cannot be built
+    fig_det.suptitle("Computing limiting inverse hybrids…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    ep_roots, ep_intervals = inverse_hyb_obstruction_energies(outside, inside)
+    print(f"[snobex] Inverse hybrids possible for e+ in {[(round(a, 4), round(b, 4)) for a, b in ep_intervals]}"
+          if ep_intervals else "[snobex] The wall obstruction rules out inverse hybrids for this EoS")
+    h_rows = []
+    for ep_star in ep_roots:
+        cs_star = float(np.sqrt(outside.cs2(ep_star)))
+        xi_lim = np.linspace(0.005 * cs_star, 0.999 * cs_star, contour_resolution * 10)
+        lim_hyb = lambda x, ep_star=ep_star: spinodal_inverse_hyb_contour_finder(x, ep_star, outside, inside)
+        with concurrent.futures.ThreadPoolExecutor() as ex:
+            results = list(ex.map(lim_hyb, xi_lim))
+        xi_lim, results = _refine_edges(lim_hyb, xi_lim, results, lambda r: bool(np.all(np.isfinite(r))))
+        h_rows += [(x, r[0], r[1], ep_star) for x, r in zip(xi_lim, results)] + [(np.nan,) * 3 + (ep_star,)]
+    if h_rows:
+        h_xiw, h_eN, h_eC, h_ep = (np.array(col, dtype=float) for col in zip(*h_rows))
+        h_alpha = np.array([_alphan(e) if np.isfinite(x) else np.nan for x, e in zip(h_xiw, h_eN)])
+        ax_det.plot(h_xiw, h_eN, '--k')        # a wall obstruction, as the slowest inverse detonations
+        ax_C.plot(h_xiw, h_eC, '--k')
+        ax_alpha.plot(h_xiw, h_alpha, '--k')
+        results_dict['Local_contours']['spinodal_inverse_hybrid'] = {
+            'xi': h_xiw, 'eC': h_eC, 'eN': h_eN, 'alpha': h_alpha, 'ep': h_ep,
+            'roots': ep_roots, 'intervals': ep_intervals}
 
     fig_det.suptitle("Computing inverse deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
 
@@ -820,7 +883,8 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     # ------------------------------------------------------------------
     bh, bs, by = 0.015, 0.003, 0.94
     bars = {}
-    for k, (key, label, colour) in enumerate((('def', "Inverse def.", 'blue'), ('det', "Inverse det.", 'red'))):
+    for k, (key, label, colour) in enumerate((('def', "Inverse def.", 'blue'), ('det', "Inverse det.", 'red'),
+                                              ('hyb', "Inverse hyb.", 'green'))):
         ax_bar = fig_det.add_axes([0.15, by - k * (bh + bs), 0.7, bh])
         ax_bar.set_xticks([]);  ax_bar.set_yticks([])
         ax_bar.set_xlim(0, 1);  ax_bar.set_ylim(0, 1)
@@ -855,9 +919,6 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     fig_det.suptitle("Computing inverse detonations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
     rows = scan_inverse_detonations(outside, inside, (0.01, 0.99), en_range_det,
                                     xiw_resolution, en_resolution, progress=_progress('det'))
-    for ax_bar, _, _ in bars.values():
-        ax_bar.remove()
-    fig_det.suptitle(None)
     inverse_detonation_flows = [(xiw, eN, eC, flow[0], flow[1], flow[2])
                                 for xiw, eN, eC, flow in rows]
     print(f"[snobex] {len(inverse_detonation_flows)} inverse detonations")
@@ -866,13 +927,31 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
                     'Inverse detonation', 4, _alphan)
 
     # ------------------------------------------------------------------
+    # Inverse hybrids: scanned over the outside energy e+ at the sonic front
+    # of the wall (rows keep it as their last entry)
+    # ------------------------------------------------------------------
+    fig_det.suptitle("Computing inverse hybrids…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    rows = scan_inverse_hybrids(outside, inside, (0.01, 0.99), en_range_det,
+                                xiw_resolution, en_resolution, progress=_progress('hyb'))
+    for ax_bar, _, _ in bars.values():
+        ax_bar.remove()
+    fig_det.suptitle(None)
+    inverse_hybrid_flows = [(xiw, eN, eC, flow[0], flow[1], flow[2], ep)
+                            for xiw, ep, eN, eC, flow in rows]
+    print(f"[snobex] {len(inverse_hybrid_flows)} inverse hybrids")
+    if inverse_hybrid_flows:
+        _batch_plot(ax_det, ax_C, ax_alpha, inverse_hybrid_flows, 'go',
+                    'Inverse hybrid', 4, _alphan)
+
+    # ------------------------------------------------------------------
     # Allowed energies: superheated outside phase, inside phase above T_c
     # ------------------------------------------------------------------
     if e_out_Tc is not None:
         ax_det.axhspan(e_out_Tc, outside.e_turn, color='orange', alpha=0.2,
                        label=r'Allowed $\mathcal{E}_N$')
-    if e_in_Tc is not None and (inverse_deflagration_flows or inverse_detonation_flows):
-        eC_found = np.array([r[2] for r in inverse_deflagration_flows + inverse_detonation_flows])
+    all_flows = inverse_deflagration_flows + inverse_detonation_flows + inverse_hybrid_flows
+    if e_in_Tc is not None and all_flows:
+        eC_found = np.array([r[2] for r in all_flows])
         top = max(e_in_Tc, eC_found.max())
         ax_C.axhspan(e_in_Tc, top + 0.05 * (top - eC_found.min()), color='green', alpha=0.2,
                      label=r'Allowed $\mathcal{E}_C$')
@@ -885,8 +964,11 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
                      for r in inverse_deflagration_flows])
     jump_det = np.array([inverse_det_entropy_jump(r[1], r[0], r[3:6], outside, inside)
                          for r in inverse_detonation_flows])
+    jump_hyb = np.array([inverse_hyb_entropy_jump(r[6], r[0], r[3:6], outside, inside)
+                         for r in inverse_hybrid_flows])
     bad = ([r for r, x in zip(inverse_deflagration_flows, jump) if np.isfinite(x) and x < 0.0]
-           + [r for r, x in zip(inverse_detonation_flows, jump_det) if np.isfinite(x) and x < 0.0])
+           + [r for r, x in zip(inverse_detonation_flows, jump_det) if np.isfinite(x) and x < 0.0]
+           + [r for r, x in zip(inverse_hybrid_flows, jump_hyb) if np.isfinite(x) and x < 0.0])
     if bad:
         _batch_plot(ax_det, ax_C, ax_alpha, bad, 'k*', 'Entropy violated', 2.5, _alphan)
     results_dict['Hydro_flows']['inverse_deflagration'] = {
@@ -896,6 +978,11 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     results_dict['Hydro_flows']['inverse_detonation'] = {
         **_pack_flows(inverse_detonation_flows, _alphan),
         'entropy_jump': jump_det,
+    }
+    results_dict['Hydro_flows']['inverse_hybrid'] = {
+        **_pack_flows(inverse_hybrid_flows, _alphan),
+        'ep': np.array([r[6] for r in inverse_hybrid_flows]),
+        'entropy_jump': jump_hyb,
     }
 
     # ------------------------------------------------------------------
@@ -929,10 +1016,12 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     fig_det.canvas.mpl_connect(
         'button_press_event',
         lambda ev: _on_click(ev, ax_det, ax_C, ax_alpha,
-                             inverse_detonation_flows, inverse_deflagration_flows, [], [],
+                             inverse_detonation_flows, inverse_deflagration_flows,
+                             inverse_hybrid_flows, [],
                              output_dir, _alphan,
                              deflagration_label='Inverse deflagration',
-                             detonation_label='Inverse detonation'),
+                             detonation_label='Inverse detonation',
+                             hybrid_label='Inverse hybrid'),
     )
 
     plt.show()
@@ -1029,7 +1118,7 @@ def _entropy_overlay(ax_det, ax_C, ax_alpha, flows, bad_arr, marker, ms, alphan_
 def _on_click(event, ax_det, ax_C, ax_alpha,
               detonation_data, deflagration_data, hybrid_data, shocked_data,
               output_dir, alphan_func, deflagration_label='Deflagration',
-              detonation_label='Detonation'):
+              detonation_label='Detonation', hybrid_label='Hybrid'):
     if event.inaxes not in (ax_det, ax_C, ax_alpha):
         return
     xiw_click = event.xdata
@@ -1081,7 +1170,7 @@ def _on_click(event, ax_det, ax_C, ax_alpha,
             ey = alphan_func(eN)
         d = np.hypot(xiw - xiw_click, ey - ey_click)
         if d < best_dist:
-            best_dist = d;  best_sol = row;  best_type = 'Hybrid'
+            best_dist = d;  best_sol = row;  best_type = hybrid_label
 
     for row in shocked_data:
         xiw, eN, eC = row[0], row[1], row[2]

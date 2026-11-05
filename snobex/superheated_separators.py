@@ -17,13 +17,24 @@ superheated solution space; none is carried over from the supercooled case.
 * ``sonic_inverse_det_contour_finder``: the inverse detonations whose wall
   moves at the sound speed of the outside phase at rest, the border with
   the inverse hybrids.
+* ``inverse_hyb_wall_obstruction`` and ``inverse_hyb_obstruction_energies``:
+  the wall obstruction of the inverse hybrids, from the equation of state
+  alone (a sonic front with the inside state behind the wall at its turning
+  point); with no stretch where it holds, the EoS has no inverse hybrids.
+  ``spinodal_inverse_hyb_contour_finder``: the limiting inverse hybrids at
+  its roots, swept in the wall velocity.
+* ``limiting_inverse_hyb_contour_finder``: the limiting inverse hybrids of
+  the second kind, whose rarefaction in front reaches rest above the DCP
+  with an infinite slope (the flow obstruction that bounds the hybrids from
+  above in E_N).
 """
 
 import numpy as np
 from scipy.optimize import brentq
 
 from .hydrodynamics import integrate_flow, rest_behind_residual
-from .superheated import find_inverse_def, find_inverse_det
+from .superheated import (find_inverse_def, find_inverse_det, find_inverse_hyb,
+                          _weak_inside_states, _shock_to_rest_behind)
 
 
 def inverse_jouguet_contour_finder(eC, outside, inside, n_grid=4000):
@@ -304,3 +315,210 @@ def sonic_inverse_det_contour_finder(eN, outside, inside):
     if not np.isfinite(eC):
         return np.nan, np.nan
     return xiw, float(eC)
+
+
+def inverse_hyb_wall_obstruction(e, outside, inside):
+    """
+    Wall obstruction of the inverse hybrids, from the equation of state alone:
+        G(e+) = c_s,out^2(e+) (e+ - e*)(e+ + p1) - (p_out(e+) - p1)(e* + p_out(e+)),
+    with e* the inside turning point and p1 = p_in(e*).  It is the junction
+    condition v+^2 = (p+ - p-)(e- + p+) / ((e+ - e-)(e+ + p-)) (Eq. (17) of
+    arXiv:2607.27874) with a sonic front, v+ = -c_s,out(e+), and the inside
+    state behind the wall at its turning point, e- = e*: the slowest inflow
+    that still has a weak inside state behind it.  So G(e+) >= 0 where a
+    sonic front at e+ has a weak inside state behind it, which inverse
+    hybrids need, and the roots of G are the outside energies of the
+    limiting hybrids, whose wall state sits at the inside turning point.
+
+    Assumes that the weak inside states start at the turning point (c_s,in
+    vanishes there and the branch has no interior Jouguet point), as for the
+    analytic model and the holographic tables.
+    """
+    e = np.asarray(e, dtype=float)
+    e_star = float(inside.e_turn)
+    p1 = float(inside.p(e_star))
+    p = np.asarray(outside.p(e), dtype=float)
+    cs2 = np.asarray(outside.cs2(e), dtype=float)
+    return cs2 * (e - e_star) * (e + p1) - (p - p1) * (e_star + p)
+
+
+def inverse_hyb_obstruction_energies(outside, inside, n_grid=20001):
+    """
+    Where the wall obstruction lets inverse hybrids exist, searched on the
+    outside branch above the inside turning point (the sonic front state
+    lies above it on the branch of weak states).  Needs only the equation of
+    state, so it tells beforehand whether an EoS can have inverse hybrids.
+
+    Returns
+    -------
+    roots     : ndarray          Outside energies e+* of the limiting inverse
+                                 hybrids, where ``inverse_hyb_wall_obstruction``
+                                 vanishes.
+    intervals : list of (lo, hi) Stretches of e+ where it is >= 0; empty if the
+                                 equation of state rules out inverse hybrids.
+    """
+    lo = max(float(outside.e_lo), float(inside.e_turn))
+    hi = float(outside.e_hi)
+    if not hi > lo:
+        return np.array([]), []
+    e = np.linspace(lo, hi, n_grid)[1:-1]
+    G = inverse_hyb_wall_obstruction(e, outside, inside)
+    fin = np.isfinite(G)
+    g = lambda x: float(inverse_hyb_wall_obstruction(x, outside, inside))
+    cells = np.where(fin[:-1] & fin[1:] & (G[:-1] * G[1:] < 0))[0]
+    roots = {int(i): brentq(g, e[i], e[i + 1], xtol=1e-12) for i in cells}
+
+    # runs of G >= 0, closed by the roots at their ends (or by the grid)
+    pos = fin & (G >= 0)
+    edges = np.flatnonzero(np.diff(np.r_[0, pos.astype(int), 0]))
+    intervals = [(roots.get(a - 1, float(e[a])), roots.get(b - 1, float(e[b - 1])))
+                 for a, b in zip(edges[::2], edges[1::2])]
+    return np.array(sorted(roots.values())), intervals
+
+
+def spinodal_inverse_hyb_contour_finder(xiw, ep, outside, inside):
+    """
+    Limiting inverse hybrid with wall velocity ``xiw`` and sonic front at the
+    outside energy ``ep``, a root of ``inverse_hyb_wall_obstruction``: the
+    inside state behind the wall sits at its turning point e*,
+        vm = vp (ep + p1) / (e* + p+),   vp = -c_s,out(ep).
+    Beyond the root no sonic front has a weak inside state behind it, so
+    these bound the inverse hybrids, as the slowest inverse detonations
+    (``spinodal_inverse_det_contour_finder``) bound the inverse detonations.
+    The front is fixed by the root, so the curve is swept in ``xiw``.
+
+    Parameters
+    ----------
+    xiw     : float   Wall velocity.
+    ep      : float   Outside energy at the sonic front (a root e+*).
+    outside : Branch  Metastable phase the bubble expands into (LT).
+    inside  : Branch  Phase inside the bubble (HT).
+
+    Returns
+    -------
+    (eN, eC) : (float, float) or (NaN, NaN)
+        NaN where that hybrid cannot be built: the wall is not slower than
+        the sonic front (xiw >= c_s,out(ep)), the rarefaction in front folds
+        (above the degenerate critical point of the outside phase), or no
+        shock fits behind the wall (beyond the inverse Jouguet curve).
+    """
+    xiw = float(xiw.item() if np.ndim(xiw) > 0 else xiw)
+    ep = float(ep)
+    em = float(inside.e_turn)
+    pm, pp = float(inside.p(em)), float(outside.p(ep))
+    cs2 = float(outside.cs2(ep))
+    if not (np.isfinite(cs2) and cs2 > xiw**2):
+        return np.nan, np.nan
+    vp = -float(np.sqrt(cs2))
+    vm = vp * (ep + pm) / (em + pp)
+    if not -1.0 < vm < -xiw:
+        return np.nan, np.nan
+    eN, eC, _ = find_inverse_hyb(ep, xiw, outside, inside, wall=(vm, em))
+    if not (np.isfinite(eN) and np.isfinite(eC)):
+        return np.nan, np.nan
+    return float(eN), float(eC)
+
+
+def limiting_inverse_hyb_contour_finder(xi0, outside, inside, e_star=None, v_start=1e-8, t_max=1e7,
+                                        xi_min=1e-6, n_grid=20000, n_samples=2000, n_side=200):
+    """
+    Limiting inverse hybrid whose rarefaction in front of the wall reaches
+    rest at xi0 = c_s(E_N) with dv/dxi -> infinity: the flow obstruction of
+    the second kind, as for the limiting inverse deflagrations
+    (``limiting_inverse_def_contour_finder``), with the same start.
+
+    Above the DCP, E_N > e*, the rarefaction turns back before reaching rest;
+    the limiting one has its fold at the point of rest, of size ``v_start``.
+    It is started there and integrated towards the centre: where the
+    junction conditions with the centre at rest hold it would meet the wall
+    of the limiting inverse deflagration, and further in, where the flow
+    becomes sonic, mu = c_s(e), it meets the wall of the limiting hybrid,
+    whose front state is then sonic, v+ = -c_s(e+).  Behind the wall come
+    the weak inside state, the compression and the shock to rest, as in
+    ``find_inverse_hyb``.  Sweeping xi0 in (0, c_s(e*)) gives the separator
+    that bounds the inverse hybrids from above in E_N; it ends at
+    xi_w = c_s(e*), E_N = e+ = e*, where the rarefaction shrinks to nothing.
+    The curve moves (logarithmically) with ``v_start``, whose default equals
+    the ``v_rest`` of ``find_inverse_hyb``.
+
+    Parameters
+    ----------
+    xi0       : float   Point of rest, xi0 = c_s(E_N); below c_s(e*).
+    outside   : Branch  Metastable phase the bubble expands into (LT).
+    inside    : Branch  Phase inside the bubble (HT).
+    e_star    : float   DCP of the outside branch (computed if None).
+    v_start   : float   Size of the fold at the point of rest.
+    t_max     : float   Maximum integration length of the rarefaction.
+    xi_min    : float   The rarefaction is followed down to xi_min.
+    n_grid    : int     Points of the scan for the weak inside state.
+    n_samples : int     Points of the flow behind the wall searched for the shock.
+    n_side    : int     Points of the regions at rest in the returned flow.
+
+    Returns
+    -------
+    (xiw, eN, eC, ep, flow) : the wall velocity, nucleation and centre
+        energies, the outside energy at the sonic front, and [v(xi), xi, e(xi)]
+        from the centre to xi = 1; or NaNs where that hybrid cannot be built
+        (no sonic point, no weak inside state behind it, no shock to rest).
+    """
+    fail = (np.nan,) * 5
+    xi0 = float(xi0.item() if np.ndim(xi0) > 0 else xi0)
+    if e_star is None:
+        e_star = dcp_energy(outside)
+    if not np.isfinite(e_star):
+        return fail
+
+    # point of rest: E_N between the DCP and the turning point, on the sonic curve
+    v0 = -v_start
+    mu = (xi0 - v0) / (1.0 - xi0 * v0)
+    edge = outside.e_turn + (1e-9 if outside.up else -1e-9) * abs(outside.e_turn - e_star)
+    try:
+        eN = brentq(lambda e: np.sqrt(max(float(outside.cs2(e)), 0.0)) - mu, *sorted((e_star, edge)))
+    except ValueError:
+        return fail
+
+    # rarefaction towards the centre, until it becomes sonic again: the wall
+    def centre(t, y, *args):
+        return y[1] - xi_min
+    def beyond(t, y, *args):
+        return y[1] - 1.0
+    centre.terminal = beyond.terminal = True
+    sol = integrate_flow(outside, [v0, xi0, eN], (0.0, t_max), events=[centre, beyond],
+                         rtol=1e-10, atol=[1e-4 * v_start, 1e-12, 1e-12], dense_output=True)
+    t_end = sol.t[-1]
+    ts = np.unique(np.concatenate((np.linspace(0.0, t_end, 1000),
+                                   np.geomspace(min(1e-6 * t_end, 1e-3), t_end, 1000))))
+    sonic = lambda t: (lambda v, x, e: (x - v)**2 - float(outside.cs2(e)) * (1.0 - x * v)**2)(*sol.sol(t))
+    V, XI, EE = sol.sol(ts)
+    S = (XI - V)**2 - np.asarray(outside.cs2(EE), dtype=float) * (1.0 - XI * V)**2
+    # leave out the start, which is on the sonic curve (the fold at the point of rest)
+    inside_flow = np.where(S < 0)[0]
+    if not inside_flow.size:
+        return fail
+    k0 = inside_flow[0]
+    cross = k0 + np.where((S[k0:-1] < 0) & (S[k0 + 1:] >= 0))[0]
+    if not cross.size:
+        return fail
+    k = cross[0]
+    t_w = brentq(sonic, ts[k], ts[k + 1], xtol=1e-14)
+    vw, xw, ew = sol.sol(t_w)
+    vp = (vw - xw) / (1.0 - vw * xw)                     # = -c_s(ew) on the sonic curve
+    if not (0.0 < xw < 1.0 and vp < 0.0):
+        return fail
+    v_r, xi_r, e_r = (np.append(a[:k + 1], b) for a, b in zip((V, XI, EE), (vw, xw, ew)))
+    if np.any(np.diff(xi_r) > 1e-12 * xi0) or np.any(v_r > 0):
+        return fail
+
+    # wall: the weak inside state behind the sonic front; then the shock to rest
+    states = _weak_inside_states(vp, float(ew), float(xw), outside, inside, n_grid)
+    if not states:
+        return fail
+    vm, em = states[0]
+    behind = _shock_to_rest_behind(inside, float(xw), vm, em, 1e-8, 1e3, n_samples)
+    if behind is None:
+        return fail
+    eC, xi_sh, v_f, xi_f, e_f = behind
+    flow = [np.concatenate((np.zeros(n_side), v_f[::-1], v_r[::-1], np.zeros(n_side))),
+            np.concatenate((np.linspace(0.0, xi_sh, n_side), xi_f[::-1], xi_r[::-1], np.linspace(xi0, 1.0, n_side))),
+            np.concatenate((np.full(n_side, eC), e_f[::-1], e_r[::-1], np.full(n_side, eN)))]
+    return float(xw), float(eN), float(eC), float(ew), flow

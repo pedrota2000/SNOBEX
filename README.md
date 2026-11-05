@@ -22,7 +22,7 @@ phase transitions, for a general equation of state.
 - Full phase-space computation of supercooled transitions: detonations,
   deflagrations, hybrids, and shocked detonations.
 - Superheated transitions (HT bubble expanding into the metastable LT
-  phase): inverse deflagrations and inverse detonations.
+  phase): inverse deflagrations, inverse detonations and inverse hybrids.
 - Automatic separator curves for different type of solutions.
 - Click-to-inspect: click any point in the phase-space plot to display
   the corresponding velocity and energy profiles.
@@ -69,10 +69,28 @@ Superheated transitions (HT bubble expanding into the metastable LT phase):
   inverse detonations (dashed black), whose state behind the wall is at the
   HT turning point: slower walls have no junction state on the HT branch.
   Where that wall would be subsonic with respect to the LT phase they are
-  bounded instead by ξ_w = c_s,LT(E_N) (dashed black), the border with the
+  bounded instead by ξ_w = c_s,LT(E_N) (dashed magenta), the border with the
   inverse hybrids.
   They exist for the analytic model but not for QCD-like (holographic)
-  equations of state.  Both families are marked
+  equations of state.
+- **Inverse hybrid** — a rarefaction in the LT phase in front of a wall
+  whose front state is sonic, |v+| = c_s,LT(e+), and the HT compression and
+  shock to rest of an inverse detonation behind it (`find_inverse_hyb`, with
+  e+ as input).  They lie between the inverse Jouguet curve, where the shock
+  reaches the wall, and ξ_w = c_s,LT(E_N), where the rarefaction vanishes,
+  and are bounded below by the limiting inverse hybrids (dashed black),
+  whose HT state behind the wall sits at its turning point.  From above
+  they are bounded by a flow obstruction (dashed red): their rarefaction
+  in front reaches rest above the degenerate critical point of the LT phase
+  with an infinite slope, as for the limiting inverse deflagrations.  That wall
+  obstruction depends on the EoS alone: a sonic front e+ has a weak HT
+  state behind it only if
+  c_s,LT²(e+)(e+ − e_TH)(e+ + p1) ≥ (p_LT(e+) − p1)(e_TH + p_LT(e+)),
+  so an EoS where this never holds has no inverse hybrids
+  (`inverse_hyb_obstruction_energies`).  For the analytic model they exist
+  with e_TL = 5 but not with e_TL = 2, nor for the holographic tables.
+
+  In the plot all three families are marked
   by the entropy condition at the wall, ΔJ_s = J_s+ − J_s− ≥ 0 with
   J_s = sγv in the wall frame, as for the supercooled walls.
 
@@ -102,8 +120,11 @@ snobex/
     supercooled_separators.py   Their separators and contours
     superheated.py              Superheated solutions (HT bubble in metastable LT)
     superheated_separators.py   Their separators (inverse Jouguet curve, limiting
-                                inverse deflagrations)
-    plotting.py                 Interactive phase-space bubble plot (supercooled)
+                                inverse deflagrations, slowest and sonic inverse
+                                detonations, limiting inverse hybrids of both
+                                kinds)
+    plotting.py                 Interactive phase-space bubble plots (supercooled
+                                and superheated)
 
 main_eos_explorer.py     Interactive EoS explorer GUI (start here)
 main_bubble_solver.py    Standalone bubble phase-space solver
@@ -121,6 +142,9 @@ scripts/
                                       sliders, the shock residual along the flow,
                                       the wall speed each HT state needs and a
                                       map of the failing checks
+    inverse_hybrid_profile.py         the same for one inverse hybrid, with ξ_w and
+                                      e+ sliders, the rarefaction in front on a log
+                                      scale and the HT states behind a sonic front
 ```
 
 ---
@@ -136,8 +160,8 @@ python main_eos_explorer.py
 Use the sliders to tune the EoS parameters and watch the thermodynamic
 quantities update in real time.  Click **"Supercooled bubbles"** to
 launch the full phase-space computation of the supercooled transition, or
-**"Superheated bubbles"** for the superheated one (inverse deflagrations
-and inverse detonations).
+**"Superheated bubbles"** for the superheated one (inverse deflagrations,
+detonations and hybrids).
 
 ### 2. Standalone bubble solver
 

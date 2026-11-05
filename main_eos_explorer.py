@@ -10,7 +10,7 @@ in real time; two buttons compute the bubble phase space:
 * "Supercooled bubbles": an LT bubble expanding into the metastable HT phase
   (detonations, deflagrations, hybrids, shocked detonations).
 * "Superheated bubbles": an HT bubble expanding into the metastable LT phase
-  (so far inverse deflagrations only).
+  (inverse deflagrations, detonations and hybrids).
 
 Usage
 -----
@@ -237,7 +237,7 @@ def _find_energy_at_tc(eTH, eTL, p1, sTL, sTH, t_c, delta, n, branch):
 # Button callbacks: supercooled and superheated bubble phase spaces
 # ---------------------------------------------------------------------------
 def _compute_superheated(event):
-    """HT bubble expanding into the metastable LT phase (inverse deflagrations)."""
+    """HT bubble expanding into the metastable LT phase (inverse deflagrations, detonations and hybrids)."""
     if custom_branches is not None:
         print("\n[EoS Explorer] Computing superheated bubbles for the custom EoS…")
         ht, lt = custom_branches
