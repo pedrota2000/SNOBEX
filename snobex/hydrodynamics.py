@@ -8,8 +8,8 @@ Hydrodynamics shared by supercooled and superheated transitions.
 * ``_edge_events``: stops a flow at the edge of a tabulated branch.
 * Building blocks on ``Branch`` objects for the phases outside and inside
   the bubble: ``junction_residual``, ``integrate_flow``,
-  ``inside_state_at_wall``, ``outside_state_at_wall`` and
-  ``pressure_balance_energy``.
+  ``inside_state_at_wall``, ``outside_state_at_wall``,
+  ``rest_behind_residual`` and ``pressure_balance_energy``.
 
 The solutions themselves live in ``supercooled`` and ``superheated``.
 """
@@ -158,6 +158,36 @@ def outside_state_at_wall(outside, inside, e_in, vm, guesses, v_bounds,
                 or ep < outside.e_lo or ep > outside.e_hi or abs(vp) < 1e-15):
             return vp, ep
     return None
+
+
+def rest_behind_residual(xi, v, e_ahead, ahead, behind):
+    """
+    Junction conditions across a discontinuity (wall or shock) at ``xi``
+    moving outwards, with the fluid behind it, towards the centre, at rest.
+    The state ahead of it has plasma-frame velocity ``v`` and energy
+    ``e_ahead`` on the branch ``ahead``; the energy behind, on ``behind``,
+    is the unknown.  With a = |v - xi| / (1 - v xi) the speed of the inflow
+    and xi that of the outflow, the two conditions are straight lines in the
+    (e_behind, p_behind) plane,
+        momentum:     p_b = p_a - xi a (e_a - e_b),
+        energy flux:  p_b = (xi / a)(e_b + p_a) - e_a,
+    and the discontinuity needs their intersection to lie on ``behind``.
+
+    Returns
+    -------
+    (residual, e_behind) : p_behind(e_b) - p_b at the intersection and its
+        e_b; the residual is NaN if e_b is off the branch ``behind``.
+    """
+    a = abs((v - xi) / (1.0 - v * xi))
+    pa = float(ahead.p(e_ahead))
+    b1, a1 = xi * a, pa - xi * a * e_ahead
+    b2, a2 = xi / a, xi * pa / a - e_ahead
+    if abs(b1 - b2) < 1e-15:
+        return np.nan, np.nan
+    eb = (a2 - a1) / (b1 - b2)
+    if not behind.e_lo <= eb <= behind.e_hi:
+        return np.nan, eb
+    return float(behind.p(eb)) - (a1 + b1 * eb), eb
 
 
 def pressure_balance_energy(outside, inside):

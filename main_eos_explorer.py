@@ -77,7 +77,7 @@ CUSTOM_EOS_CS2_FROM = 'pe'         # 'pe': cs2 = dp/de; 'Ts': cs2 = (s/T) dT/ds 
 # Default initial parameter values
 # ---------------------------------------------------------------------------
 INITIAL_ETH   = 0.5
-INITIAL_ETL   = 2.0
+INITIAL_ETL   = 5.0
 INITIAL_P1    = 0.0
 INITIAL_STL   = 8.45
 INITIAL_STH   = 2.5

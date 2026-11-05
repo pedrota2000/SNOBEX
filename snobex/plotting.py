@@ -7,7 +7,8 @@ Interactive phase-space bubble plots for snobex.
 separator curves and hydrodynamic flows, then displays a live
 matplotlib figure where clicking on any point shows the corresponding
 velocity and energy profiles.  ``superheated_bubble_plot`` does the same
-for superheated transitions, so far with inverse deflagrations only.
+for superheated transitions, so far with inverse deflagrations and
+inverse detonations.
 """
 
 import numpy as np
@@ -43,13 +44,17 @@ from .supercooled_separators import (
 )
 from .superheated import (
     scan_inverse_deflagrations,
+    scan_inverse_detonations,
     superheated_window,
-    inverse_def_entropy_ratio,
+    inverse_def_entropy_jump,
+    inverse_det_entropy_jump,
     alpha_n,
 )
 from .superheated_separators import (
     inverse_jouguet_contour_finder,
     limiting_inverse_def_contour_finder,
+    spinodal_inverse_det_contour_finder,
+    sonic_inverse_det_contour_finder,
     dcp_energy,
 )
 
@@ -647,8 +652,15 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     Interactive phase-space plot of a superheated transition: a bubble of the
     ``inside`` (HT) phase expanding into the metastable ``outside`` (LT)
     phase.  Same layout and conventions as ``interactive_bubble_plot``; so far
-    it contains the inverse deflagrations.  Those that violate the entropy
-    condition at the wall are marked with black stars.
+    it contains the inverse deflagrations (blue) and inverse detonations
+    (red).  Those that violate the entropy condition at the wall are marked
+    with black stars.  The separators have the styles of their supercooled
+    counterparts: dashed blue, the inverse Jouguet deflagrations (as the
+    Jouguet detonations); dashed red, the limiting inverse deflagrations (as
+    the limiting detonations); dashed black, the slowest inverse detonations,
+    below which the junction conditions have no solution (as the detonation
+    separator), and the inverse detonations with xi_w = c_s,out(E_N), the
+    border with the inverse hybrids (as the deflagration separator).
 
     Parameters
     ----------
@@ -763,33 +775,73 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
             'xi': l_xiw, 'eC': l_eC, 'eN': l_eN, 'e_star': e_star,
             'alpha': np.array(list(map(_alphan, l_eN)))}
 
+    # Slowest inverse detonations: the state behind the wall at the inside
+    # turning point; slower walls have no junction state on the inside branch.
+    # Where that wall is not supersonic with respect to the outside phase the
+    # curve is cut (NaN rows break the line)
+    fig_det.suptitle("Computing slowest inverse detonations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    span = outside.e_hi - outside.e_lo
+    en_range_det = (outside.e_lo + 1e-3 * span, outside.e_hi - 1e-3 * span)
+    eN_spin = np.linspace(*en_range_det, contour_resolution * 10)
+    spinodal = lambda eN: spinodal_inverse_det_contour_finder(eN, outside, inside)
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        results = list(ex.map(spinodal, eN_spin))
+    eN_spin, results = _refine_edges(spinodal, eN_spin, results, lambda r: bool(np.all(np.isfinite(r))))
+    s_xiw, s_eC = (np.array(col, dtype=float) for col in zip(*results))
+    s_eN = np.asarray(eN_spin, dtype=float)
+    s_alpha = np.array([_alphan(e) if np.isfinite(x) else np.nan for x, e in zip(s_xiw, s_eN)])
+    ax_det.plot(s_xiw, s_eN, '--k')            # as the supercooled detonation separator (e- = eTL)
+    ax_C.plot(s_xiw, s_eC, '--k')
+    ax_alpha.plot(s_xiw, s_alpha, '--k')
+    results_dict['Local_contours']['spinodal_inverse_detonation'] = {
+        'xi': s_xiw, 'eC': s_eC, 'eN': s_eN, 'alpha': s_alpha}
+
+    # Inverse detonations with the wall at the sound speed of the outside
+    # phase, xi_w = c_s,out(E_N): the border with the inverse hybrids
+    fig_det.suptitle("Computing sonic inverse detonations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    eN_sonic = np.linspace(*en_range_det, contour_resolution * 10)
+    sonic = lambda eN: sonic_inverse_det_contour_finder(eN, outside, inside)
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        results = list(ex.map(sonic, eN_sonic))
+    eN_sonic, results = _refine_edges(sonic, eN_sonic, results, lambda r: bool(np.all(np.isfinite(r))))
+    c_xiw, c_eC = (np.array(col, dtype=float) for col in zip(*results))
+    c_eN = np.asarray(eN_sonic, dtype=float)
+    c_alpha = np.array([_alphan(e) if np.isfinite(x) else np.nan for x, e in zip(c_xiw, c_eN)])
+    ax_det.plot(c_xiw, c_eN, '--k')            # as the supercooled deflagration separator, xi_w = c_s(E_C)
+    ax_C.plot(c_xiw, c_eC, '--k')
+    ax_alpha.plot(c_xiw, c_alpha, '--k')
+    results_dict['Local_contours']['sonic_inverse_detonation'] = {
+        'xi': c_xiw, 'eC': c_eC, 'eN': c_eN, 'alpha': c_alpha}
+
     fig_det.suptitle("Computing inverse deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
 
     # ------------------------------------------------------------------
-    # Progress bar
+    # Progress bars
     # ------------------------------------------------------------------
-    bh, by = 0.015, 0.94
-    ax_bar = fig_det.add_axes([0.15, by, 0.7, bh])
-    ax_bar.set_xticks([]);  ax_bar.set_yticks([])
-    ax_bar.set_xlim(0, 1);  ax_bar.set_ylim(0, 1)
-    bar_rect = ax_bar.barh([0.5], [0], height=1.0, color='blue')[0]
-    ax_bar.text(-0.02, 0.5, "Inverse def.", va='center', ha='right', fontsize=8,
-                transform=ax_bar.transAxes)
-    bar_pct = ax_bar.text(1.02, 0.5, "0%", va='center', ha='left', fontsize=8,
-                          transform=ax_bar.transAxes)
+    bh, bs, by = 0.015, 0.003, 0.94
+    bars = {}
+    for k, (key, label, colour) in enumerate((('def', "Inverse def.", 'blue'), ('det', "Inverse det.", 'red'))):
+        ax_bar = fig_det.add_axes([0.15, by - k * (bh + bs), 0.7, bh])
+        ax_bar.set_xticks([]);  ax_bar.set_yticks([])
+        ax_bar.set_xlim(0, 1);  ax_bar.set_ylim(0, 1)
+        ax_bar.text(-0.02, 0.5, label, va='center', ha='right', fontsize=8, transform=ax_bar.transAxes)
+        bars[key] = (ax_bar, ax_bar.barh([0.5], [0], height=1.0, color=colour)[0],
+                     ax_bar.text(1.02, 0.5, "0%", va='center', ha='left', fontsize=8,
+                                 transform=ax_bar.transAxes))
 
-    def _progress(done, total):
-        bar_rect.set_width(done / total)
-        bar_pct.set_text(f"{done / total * 100:.1f}%")
-        fig_det.canvas.draw_idle();  fig_det.canvas.flush_events()
+    def _progress(key):
+        def update(done, total):
+            _, rect, pct = bars[key]
+            rect.set_width(done / total)
+            pct.set_text(f"{done / total * 100:.1f}%")
+            fig_det.canvas.draw_idle();  fig_det.canvas.flush_events()
+        return update
 
     # ------------------------------------------------------------------
     # Inverse deflagrations
     # ------------------------------------------------------------------
     rows = scan_inverse_deflagrations(outside, inside, xiw_range, ec_range,
-                                      xiw_resolution, en_resolution, progress=_progress)
-    ax_bar.remove()
-    fig_det.suptitle(None)
+                                      xiw_resolution, en_resolution, progress=_progress('def'))
     inverse_deflagration_flows = [(xiw, eN, eC, flow[0], flow[1], flow[2])
                                   for xiw, eC, eN, flow in rows]
     print(f"[snobex] {len(inverse_deflagration_flows)} inverse deflagrations")
@@ -797,13 +849,30 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
                 'Inverse deflagration', 4, _alphan)
 
     # ------------------------------------------------------------------
+    # Inverse detonations: supersonic walls, so xi_w up to 1, over the whole
+    # outside branch in E_N
+    # ------------------------------------------------------------------
+    fig_det.suptitle("Computing inverse detonations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    rows = scan_inverse_detonations(outside, inside, (0.01, 0.99), en_range_det,
+                                    xiw_resolution, en_resolution, progress=_progress('det'))
+    for ax_bar, _, _ in bars.values():
+        ax_bar.remove()
+    fig_det.suptitle(None)
+    inverse_detonation_flows = [(xiw, eN, eC, flow[0], flow[1], flow[2])
+                                for xiw, eN, eC, flow in rows]
+    print(f"[snobex] {len(inverse_detonation_flows)} inverse detonations")
+    if inverse_detonation_flows:
+        _batch_plot(ax_det, ax_C, ax_alpha, inverse_detonation_flows, 'ro',
+                    'Inverse detonation', 4, _alphan)
+
+    # ------------------------------------------------------------------
     # Allowed energies: superheated outside phase, inside phase above T_c
     # ------------------------------------------------------------------
     if e_out_Tc is not None:
         ax_det.axhspan(e_out_Tc, outside.e_turn, color='orange', alpha=0.2,
                        label=r'Allowed $\mathcal{E}_N$')
-    if e_in_Tc is not None and inverse_deflagration_flows:
-        eC_found = np.array([r[2] for r in inverse_deflagration_flows])
+    if e_in_Tc is not None and (inverse_deflagration_flows or inverse_detonation_flows):
+        eC_found = np.array([r[2] for r in inverse_deflagration_flows + inverse_detonation_flows])
         top = max(e_in_Tc, eC_found.max())
         ax_C.axhspan(e_in_Tc, top + 0.05 * (top - eC_found.min()), color='green', alpha=0.2,
                      label=r'Allowed $\mathcal{E}_C$')
@@ -811,14 +880,22 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     # ------------------------------------------------------------------
     # Entropy condition at the wall
     # ------------------------------------------------------------------
-    ratio = np.array([inverse_def_entropy_ratio(r[2], r[0], r[3:6], outside, inside)
-                      for r in inverse_deflagration_flows])
-    bad = [r for r, x in zip(inverse_deflagration_flows, ratio) if np.isfinite(x) and x < 1.0]
+    # Delta J_s = J_s+ - J_s- >= 0, as entropy_checker for the supercooled walls
+    jump = np.array([inverse_def_entropy_jump(r[2], r[0], r[3:6], outside, inside)
+                     for r in inverse_deflagration_flows])
+    jump_det = np.array([inverse_det_entropy_jump(r[1], r[0], r[3:6], outside, inside)
+                         for r in inverse_detonation_flows])
+    bad = ([r for r, x in zip(inverse_deflagration_flows, jump) if np.isfinite(x) and x < 0.0]
+           + [r for r, x in zip(inverse_detonation_flows, jump_det) if np.isfinite(x) and x < 0.0])
     if bad:
         _batch_plot(ax_det, ax_C, ax_alpha, bad, 'k*', 'Entropy violated', 2.5, _alphan)
     results_dict['Hydro_flows']['inverse_deflagration'] = {
         **_pack_flows(inverse_deflagration_flows, _alphan),
-        'entropy_ratio': ratio,
+        'entropy_jump': jump,
+    }
+    results_dict['Hydro_flows']['inverse_detonation'] = {
+        **_pack_flows(inverse_detonation_flows, _alphan),
+        'entropy_jump': jump_det,
     }
 
     # ------------------------------------------------------------------
@@ -852,9 +929,10 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     fig_det.canvas.mpl_connect(
         'button_press_event',
         lambda ev: _on_click(ev, ax_det, ax_C, ax_alpha,
-                             [], inverse_deflagration_flows, [], [],
+                             inverse_detonation_flows, inverse_deflagration_flows, [], [],
                              output_dir, _alphan,
-                             deflagration_label='Inverse deflagration'),
+                             deflagration_label='Inverse deflagration',
+                             detonation_label='Inverse detonation'),
     )
 
     plt.show()
@@ -950,7 +1028,8 @@ def _entropy_overlay(ax_det, ax_C, ax_alpha, flows, bad_arr, marker, ms, alphan_
 
 def _on_click(event, ax_det, ax_C, ax_alpha,
               detonation_data, deflagration_data, hybrid_data, shocked_data,
-              output_dir, alphan_func, deflagration_label='Deflagration'):
+              output_dir, alphan_func, deflagration_label='Deflagration',
+              detonation_label='Detonation'):
     if event.inaxes not in (ax_det, ax_C, ax_alpha):
         return
     xiw_click = event.xdata
@@ -978,7 +1057,7 @@ def _on_click(event, ax_det, ax_C, ax_alpha,
             ey = alphan_func(eN)
         d = np.hypot(xiw - xiw_click, ey - ey_click)
         if d < best_dist:
-            best_dist = d;  best_sol = row + (np.nan,);  best_type = 'Detonation'
+            best_dist = d;  best_sol = row + (np.nan,);  best_type = detonation_label
 
     for row in deflagration_data:
         xiw, eN, eC = row[0], row[1], row[2]

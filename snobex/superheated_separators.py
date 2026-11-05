@@ -11,13 +11,19 @@ superheated solution space; none is carried over from the supercooled case.
   deflagrations, whose rarefaction reaches rest above the degenerate
   critical point (``dcp_energy``) with an infinite slope; they bound the
   inverse deflagrations from above.
+* ``spinodal_inverse_det_contour_finder``: the slowest inverse detonations,
+  whose state behind the wall is at the turning point of the inside phase;
+  slower walls have no junction state on the inside branch.
+* ``sonic_inverse_det_contour_finder``: the inverse detonations whose wall
+  moves at the sound speed of the outside phase at rest, the border with
+  the inverse hybrids.
 """
 
 import numpy as np
 from scipy.optimize import brentq
 
-from .hydrodynamics import integrate_flow
-from .superheated import find_inverse_def
+from .hydrodynamics import integrate_flow, rest_behind_residual
+from .superheated import find_inverse_def, find_inverse_det
 
 
 def inverse_jouguet_contour_finder(eC, outside, inside, n_grid=4000):
@@ -111,27 +117,15 @@ def inverse_wall_residual(xi, v, ep, outside, inside):
     """
     Junction conditions for a wall at ``xi`` with the centre at rest, given
     the outside state (plasma-frame velocity ``v``, energy ``ep``) in front
-    of it.  With a = |v+| = |v - xi| / (1 - v xi) and v- = -xi, they are two
-    straight lines in the (E_C, p-) plane,
-        momentum:     p- = p+ - xi a (e+ - E_C),
-        energy flux:  p- = (xi / a)(E_C + p+) - e+,
-    and the wall needs their intersection to lie on the inside branch.
+    of it: ``rest_behind_residual`` with the outside phase ahead.
 
     Returns
     -------
-    (residual, eC) : p_in(E_C) - p- at the intersection and its E_C; the
-        residual is NaN if E_C is off the inside branch.
+    (residual, eC) : p_in(E_C) - p- at the intersection of the two junction
+        conditions in the (E_C, p-) plane and its E_C; the residual is NaN if
+        E_C is off the inside branch.
     """
-    a = abs((v - xi) / (1.0 - v * xi))
-    pp = float(outside.p(ep))
-    b1, a1 = xi * a, pp - xi * a * ep
-    b2, a2 = xi / a, xi * pp / a - ep
-    if abs(b1 - b2) < 1e-15:
-        return np.nan, np.nan
-    eC = (a2 - a1) / (b1 - b2)
-    if not inside.e_lo <= eC <= inside.e_hi:
-        return np.nan, eC
-    return float(inside.p(eC)) - (a1 + b1 * eC), eC
+    return rest_behind_residual(xi, v, ep, outside, inside)
 
 
 def limiting_inverse_def_contour_finder(xi0, outside, inside, e_star=None, v_start=1e-8,
@@ -223,3 +217,90 @@ def limiting_inverse_def_contour_finder(xi0, outside, inside, e_star=None, v_sta
             np.concatenate((np.linspace(0.0, xw, n_side), xi[::-1], np.linspace(xi0, 1.0, n_side))),
             np.concatenate((np.full(n_side, eC), e[::-1], np.full(n_side, eN)))]
     return float(xw), float(eN), float(eC), flow
+
+
+def spinodal_inverse_det_contour_finder(eN, outside, inside):
+    """
+    Slowest inverse detonation for nucleation energy ``eN``: the state behind
+    the wall at the turning point of the inside branch, e- = eTH, where
+    c_s,in = 0.
+
+    With the outside at rest (v+ = -xi_w, e+ = E_N) the junction conditions
+    give each inside state e- the wall speed
+        xi_w^2 = (p+ - p-)(e- + p+) / ((E_N + p-)(E_N - e-)),
+        v- = -xi_w (E_N + p-) / (e- + p+).
+    For the analytic model xi_w(e-) grows from the turning point, with no
+    interior minimum (no Jouguet point, |v-| = c_s, on the branch: every
+    wall state is weak).  Slower walls would need a state past the spinodal,
+    so the junction conditions have no solution on the inside branch and the
+    curve bounds the inverse detonations from below, as the Jouguet
+    detonations bound the supercooled ones.  For another EoS check that
+    xi_w(e-) has no interior minimum (``scripts/inverse_detonation_profile.py``
+    draws it).
+
+    Parameters
+    ----------
+    eN      : float   Nucleation energy (outside branch).
+    outside : Branch  Metastable phase the bubble expands into (LT).
+    inside  : Branch  Phase inside the bubble (HT).
+
+    Returns
+    -------
+    (xiw, eC) : (float, float) or (NaN, NaN)
+        NaN where that wall is not supersonic with respect to the outside
+        phase (xi_w <= c_s,out(E_N)), the fluid behind it does not move
+        inwards, or ``find_inverse_det`` finds no shock bringing it to rest.
+    """
+    eN = float(eN.item() if np.ndim(eN) > 0 else eN)
+    em = float(inside.e_turn)
+    pp, pm = float(outside.p(eN)), float(inside.p(em))
+    with np.errstate(divide='ignore', invalid='ignore'):
+        h = (pp - pm) * (em + pp) / ((eN + pm) * (eN - em))
+    if not (np.isfinite(h) and 0.0 < h < 1.0):
+        return np.nan, np.nan
+    xiw = float(np.sqrt(h))
+    vm = -xiw * (eN + pm) / (em + pp)
+    if not -1.0 < vm < -xiw:
+        return np.nan, np.nan
+    eC, _ = find_inverse_det(eN, xiw, outside, inside, wall=(vm, em))
+    if not np.isfinite(eC):
+        return np.nan, np.nan
+    return xiw, float(eC)
+
+
+def sonic_inverse_det_contour_finder(eN, outside, inside):
+    """
+    Inverse detonation whose wall moves at the sound speed of the outside
+    phase at rest, xi_w = c_s,out(E_N): the border between the inverse
+    detonations (faster walls, the fluid in front stays at rest) and the
+    inverse hybrids (slower walls: the push of the wall runs ahead of it,
+    and a rarefaction in front of the wall ends at |v+| = c_s(e+); as xi_w
+    rises to c_s,out(E_N) it shrinks to nothing).  The counterpart of the
+    supercooled deflagration separator xi_w = c_s,in(E_C)
+    (``compute_def_separator``), where the wall moves at the sound speed of
+    the phase at rest next to it.
+
+    The profile is the limit of ``find_inverse_det`` from faster walls,
+    evaluated at the next float above c_s,out(E_N).
+
+    Parameters
+    ----------
+    eN      : float   Nucleation energy (outside branch).
+    outside : Branch  Metastable phase the bubble expands into (LT).
+    inside  : Branch  Phase inside the bubble (HT).
+
+    Returns
+    -------
+    (xiw, eC) : (float, float) or (NaN, NaN)
+        NaN where no inverse detonation has that wall speed, e.g. where the
+        slowest one (``spinodal_inverse_det_contour_finder``) is faster.
+    """
+    eN = float(eN.item() if np.ndim(eN) > 0 else eN)
+    cs2 = float(outside.cs2(eN))
+    if not (np.isfinite(cs2) and 0.0 < cs2 < 1.0):
+        return np.nan, np.nan
+    xiw = float(np.nextafter(np.sqrt(cs2), 1.0))
+    eC, _ = find_inverse_det(eN, xiw, outside, inside)
+    if not np.isfinite(eC):
+        return np.nan, np.nan
+    return xiw, float(eC)

@@ -22,11 +22,14 @@ phase transitions, for a general equation of state.
 - Full phase-space computation of supercooled transitions: detonations,
   deflagrations, hybrids, and shocked detonations.
 - Superheated transitions (HT bubble expanding into the metastable LT
-  phase): inverse deflagrations so far.
+  phase): inverse deflagrations and inverse detonations.
 - Automatic separator curves for different type of solutions.
 - Click-to-inspect: click any point in the phase-space plot to display
   the corresponding velocity and energy profiles.
-- Built-in α_N (phase-transition strength) computation.
+- Built-in α_N (phase-transition strength) computation, α_N =
+  (1/3)[(e_H − 3p_H) − (e_L − 3p_L)]/w at T_N, with w the enthalpy of the
+  metastable phase: w_H for supercooled transitions (Mateos et al.), w_L for
+  superheated ones (Eq. (23) of arXiv:2406.14450).
 - **Custom EoS support**: load a tabulated (T, p, e, s) EoS from a
   plain-text file, split it into its two branches and replace the analytic
   parametrisations entirely.
@@ -59,6 +62,19 @@ Superheated transitions (HT bubble expanding into the metastable LT phase):
   (dashed red): above the degenerate critical point of the LT phase the
   rarefaction turns back before reaching rest, and the limiting ones
   reach rest with an infinite slope.
+- **Inverse detonation** — supersonic wall with the LT phase at rest in
+  front; behind it the HT fluid moves inwards and is brought to rest by a
+  compression shock inside the bubble (`find_inverse_det`, with the
+  nucleation energy as input).  They are bounded from below by the slowest
+  inverse detonations (dashed black), whose state behind the wall is at the
+  HT turning point: slower walls have no junction state on the HT branch.
+  Where that wall would be subsonic with respect to the LT phase they are
+  bounded instead by ξ_w = c_s,LT(E_N) (dashed black), the border with the
+  inverse hybrids.
+  They exist for the analytic model but not for QCD-like (holographic)
+  equations of state.  Both families are marked
+  by the entropy condition at the wall, ΔJ_s = J_s+ − J_s− ≥ 0 with
+  J_s = sγv in the wall frame, as for the supercooled walls.
 
 ---
 
@@ -100,6 +116,11 @@ scripts/
     inverse_deflagration_limiting.py  limiting inverse deflagrations built from the
                                       degenerate critical point (both kinds), with a
                                       slider on the starting xi and the separator
+    inverse_detonation_profile.py     the same as inverse_deflagration_profile.py
+                                      for one inverse detonation, with ξ_w and E_N
+                                      sliders, the shock residual along the flow,
+                                      the wall speed each HT state needs and a
+                                      map of the failing checks
 ```
 
 ---
@@ -115,7 +136,8 @@ python main_eos_explorer.py
 Use the sliders to tune the EoS parameters and watch the thermodynamic
 quantities update in real time.  Click **"Supercooled bubbles"** to
 launch the full phase-space computation of the supercooled transition, or
-**"Superheated bubbles"** for the superheated one (inverse deflagrations).
+**"Superheated bubbles"** for the superheated one (inverse deflagrations
+and inverse detonations).
 
 ### 2. Standalone bubble solver
 
