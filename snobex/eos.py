@@ -374,7 +374,8 @@ def analytic_branches(eTH, eTL, p1=0.0, n=4.0, delta=1.0,
     HT and LT branches of the analytic model, with c_s² built as in
     ``interactive_bubble_plot`` (a spline of dp/de).  Entropy and temperature
     are optional; for the analytic model they come from the entropy ODEs in
-    ``snobex.thermodynamics``.
+    ``snobex.thermodynamics``.  With an HT entropy interpolant the HT branch
+    ends where it does (beyond it S and T would be extrapolated).
 
     Returns
     -------
@@ -383,10 +384,11 @@ def analytic_branches(eTH, eTL, p1=0.0, n=4.0, delta=1.0,
     pp = lambda e: pplus(e, eTH, p1, delta)
     pm = lambda e: pminus(e, eTL, n)
     e_max = 2.0 * fsolve(lambda e: pm(eTL) - pp(e), eTL * 2 if eTL > eTH else eTH * 5)[0]
-    e_ht = np.linspace(eTH * 0.9, e_max * 5, 5000)
+    ht_top = float(splus.x[-1]) if hasattr(splus, 'x') else None
+    e_ht = np.linspace(eTH * 0.9, max(e_max * 5, ht_top or 0.0), 5000)
     e_lt = np.linspace(0.0, eTL * 1.1, 5000)
     ht = Branch('HT', p=pp, cs2=CubicSpline(e_ht, np.gradient(pp(e_ht), e_ht)),
-                e_turn=eTH, up=True, s=splus, T=tplus)
+                e_turn=eTH, up=True, s=splus, T=tplus, e_hi=ht_top)
     lt = Branch('LT', p=pm, cs2=CubicSpline(e_lt, np.gradient(pm(e_lt), e_lt)),
                 e_turn=eTL, up=False, s=sminus, T=tminus)
     return ht, lt

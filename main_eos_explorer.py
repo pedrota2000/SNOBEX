@@ -4,11 +4,8 @@ main_eos_explorer.py
 snobex — EoS Explorer (inverse-problem GUI)
 
 Interactive GUI for exploring the equation of state and thermodynamic
-quantities of the two-phase model, and the transition strength alpha_N
-against the nucleation temperature (bottom panel: nucleation in the
-metastable HT phase below T_c, supercooled, and in the metastable LT phase
-above it, superheated).  Sliders control the EoS parameters in real time;
-two buttons compute the bubble phase space:
+quantities of the two-phase model.  Sliders control the EoS parameters
+in real time; two buttons compute the bubble phase space:
 
 * "Supercooled bubbles": an LT bubble expanding into the metastable HT phase
   (detonations, deflagrations, hybrids, shocked detonations).
@@ -53,7 +50,6 @@ from snobex.thermodynamics import (
     integrate_entropy_branches,
 )
 from snobex.plotting import interactive_bubble_plot, superheated_bubble_plot
-from snobex.superheated import alpha_n
 from snobex import print_logo
 
 # ---------------------------------------------------------------------------
@@ -73,6 +69,10 @@ CUSTOM_EOS_IDX_MIN = 0             # rows to skip at the high-energy end of the 
 CUSTOM_EOS_TC      = None          # T_c if known (1.0 for tables in units of T_c)
 CUSTOM_EOS_CS2_FROM = 'pe'         # 'pe': cs2 = dp/de; 'Ts': cs2 = (s/T) dT/ds (holographic tables)
 
+# Holographic table used to check the superheated solutions (uncomment to use it):
+# CUSTOM_EOS_FILE, CUSTOM_EOS_COLUMNS = "Data_holo/thermo_phiM1.txt", (0, 6, 7, 1)
+# CUSTOM_EOS_IDX_MIN, CUSTOM_EOS_CS2_FROM = 13, 'Ts'
+
 # ---------------------------------------------------------------------------
 # Default initial parameter values
 # ---------------------------------------------------------------------------
@@ -83,6 +83,14 @@ INITIAL_STL   = 8.45
 INITIAL_STH   = 2.5
 INITIAL_DELTA = 1.0
 INITIAL_N     = 4.0
+
+
+# EoS of the limiting flows of arXiv:2607.27874 (limiting hybrid and limiting
+# detonations of the first and second kind; plot_factory_limiting_flows.py in
+# Bubbles-eos):
+# INITIAL_ETH, INITIAL_ETL, INITIAL_P1 = 0.5, 5.0, 0.0
+# INITIAL_STL, INITIAL_STH = 8.45, 2.5
+# INITIAL_DELTA, INITIAL_N = 1.0, 4.0
 
 # ---------------------------------------------------------------------------
 # Custom EoS loading (optional)
@@ -104,6 +112,11 @@ custom_branches = branches_from_custom_eos(custom_eos) if custom_eos is not None
 XIW_RESOLUTION     = 25
 EN_RESOLUTION      = 25
 CONTOUR_RESOLUTION = 25
+# E_C rows of the superheated scan.  They are spaced evenly in E_N, and when
+# T_c lies close to the HT spinodal temperature alpha_N falls within a thin
+# band of E_N (0.02 < E_N < 0.2 for eTL = 5, out of 0 < E_N < 5), which takes
+# a fine spacing to fill in the alpha_N plane
+SUPERHEATED_EN_RESOLUTION = 25
 
 # ---------------------------------------------------------------------------
 # Global entropy-interpolant holders (updated by update_plots)
@@ -238,7 +251,7 @@ def _compute_superheated(event):
                                    tplus=lambda e: 1.0 / s_ht.derivative()(e),
                                    tminus=lambda e: 1.0 / s_lt.derivative()(e))
     superheated_bubble_plot(outside=lt, inside=ht,
-                            xiw_resolution=XIW_RESOLUTION, en_resolution=EN_RESOLUTION,
+                            xiw_resolution=XIW_RESOLUTION, en_resolution=SUPERHEATED_EN_RESOLUTION,
                             contour_resolution=CONTOUR_RESOLUTION, saving=True)
 
 
@@ -435,12 +448,12 @@ def _update_plots(val):
                 np.array(T_p_vals), np.array(f_p_vals))
 
         # Remove old T_c lines
-        for ax in [ax3, ax4, ax5, ax6, ax7]:
+        for ax in [ax3, ax4, ax5, ax6]:
             for ln in [l for l in ax.lines if getattr(l, '_is_tc_line', False)]:
                 ln.remove()
 
         if t_c is not None and np.isfinite(t_c):
-            for ax in [ax3, ax4, ax5, ax6, ax7]:
+            for ax in [ax3, ax4, ax5, ax6]:
                 ln = ax.axvline(t_c, color='red', linestyle='--', alpha=0.7,
                                 label=f'T_c = {t_c:.3f}')
                 ln._is_tc_line = True
@@ -493,17 +506,12 @@ def _update_plots(val):
 
         ax2.legend()
 
-        # ---- alpha_N against the nucleation temperature ----
-        _update_alpha_n(eTH, eTL, p1, n, delta, t_c)
-        ax7.legend()
-
         # ---- Auto-scale axes ----
         _autoscale(ax2, [line_minus_entropy, line_plus_entropy], xy='both')
         _autoscale(ax3, [line_minus_e_vs_t, line_plus_e_vs_t], xy='both')
         _autoscale(ax4, [line_minus_f_vs_t, line_plus_f_vs_t], xy='both')
         _autoscale(ax5, [line_minus_s_t3,   line_plus_s_t3],   xy='both')
         _autoscale(ax6, [line_minus_s_vs_t,  line_plus_s_vs_t], xy='both')
-        _autoscale(ax7, [line_alpha_sc,      line_alpha_sh],    xy='both')
 
     except Exception as exc:
         print(f"[EoS Explorer] Error in update: {exc}")
@@ -512,37 +520,10 @@ def _update_plots(val):
                    line_minus_e_vs_t, line_plus_e_vs_t,
                    line_minus_f_vs_t, line_plus_f_vs_t,
                    line_minus_s_t3,  line_plus_s_t3,
-                   line_minus_s_vs_t, line_plus_s_vs_t,
-                   line_alpha_sc,     line_alpha_sh]:
+                   line_minus_s_vs_t, line_plus_s_vs_t]:
             ln.set_data([], [])
 
     fig.canvas.draw_idle()
-
-
-def _update_alpha_n(eTH, eTL, p1, n, delta, t_c):
-    """
-    alpha_N against the nucleation temperature T_N, nucleating in the
-    metastable phase: HT between its turning point and T_c (supercooled,
-    LT bubbles) and LT between T_c and its turning point (superheated, HT
-    bubbles).  Same definition as the bubble plots, ``superheated.alpha_n``:
-    4 (theta_H - theta_L) / (3 w_H) at T_N in both cases, so the two curves
-    meet at T_c.  T = 1 / S'(E) from the current entropy interpolants.
-    """
-    line_alpha_sc.set_data([], [])
-    line_alpha_sh.set_data([], [])
-    if t_c is None or not np.isfinite(t_c) or s_minus_interp is None or s_plus_interp is None:
-        return
-    e_c_lo = _energy_at_T(line_minus_e_vs_t, t_c)
-    e_c_up = _energy_at_T(line_plus_e_vs_t,  t_c)
-    if e_c_lo is None or e_c_up is None or not (0.0 < e_c_lo < eTL and e_c_up > eTH):
-        return
-    ds_p, ds_m = s_plus_interp.derivative(), s_minus_interp.derivative()
-    ht, lt = analytic_branches(eTH, eTL, p1, n, delta, splus=s_plus_interp, sminus=s_minus_interp,
-                               tplus=lambda e: 1.0 / ds_p(e), tminus=lambda e: 1.0 / ds_m(e))
-    for line, outside, inside, e_N in ((line_alpha_sc, ht, lt, np.linspace(eTH, e_c_up, 100)),
-                                       (line_alpha_sh, lt, ht, np.linspace(e_c_lo, eTL, 100))):
-        line.set_data(np.asarray(outside.T(e_N), dtype=float),
-                      [alpha_n(e, outside, inside) for e in e_N])
 
 
 def _energy_at_T(line_e_vs_t, t_c):
@@ -583,16 +564,15 @@ def _autoscale(ax, lines, xy='both'):
 # Build figure
 # ---------------------------------------------------------------------------
 fig = plt.figure(figsize=(16, 21))
-gs_main = fig.add_gridspec(4, 2, hspace=0.3, wspace=0.3)
+gs_main = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
 ax1 = fig.add_subplot(gs_main[0, 0])  # EoS
 ax2 = fig.add_subplot(gs_main[0, 1])  # S vs E
 ax3 = fig.add_subplot(gs_main[1, 0])  # E vs T
 ax4 = fig.add_subplot(gs_main[1, 1])  # F vs T
 ax5 = fig.add_subplot(gs_main[2, 0])  # S/T³ vs T
 ax6 = fig.add_subplot(gs_main[2, 1])  # S vs T
-ax7 = fig.add_subplot(gs_main[3, :])  # alpha_N vs T_N
 
-plt.subplots_adjust(bottom=0.18, top=0.97)
+plt.subplots_adjust(bottom=0.18)
 
 # Sliders
 _sh, _ss, _bm = 0.02, 0.02, 0.015
@@ -632,9 +612,6 @@ line_minus_s_t3,    = ax5.plot([], [], label='LT branch', color='tab:orange', lw
 line_plus_s_t3,     = ax5.plot([], [], label='HT branch', color='tab:blue',   lw=2)
 line_minus_s_vs_t,  = ax6.plot([], [], label='LT branch', color='tab:orange', lw=2)
 line_plus_s_vs_t,   = ax6.plot([], [], label='HT branch', color='tab:blue',   lw=2)
-line_alpha_sc,      = ax7.plot([], [], label='Supercooled: HT at $T_N$', color='tab:blue',   lw=2)
-line_alpha_sh,      = ax7.plot([], [], label='Superheated: LT at $T_N$', color='tab:orange', lw=2)
-ax7.axhline(0.0, color='k', lw=0.8)
 
 # Axis labels
 for ax, xl, yl in [
@@ -644,7 +621,6 @@ for ax, xl, yl in [
     (ax4, r'$T$',             r'$\mathcal{F}(T)$'),
     (ax5, r'$T$',             r'$S/T^3$'),
     (ax6, r'$T$',             r'$S$'),
-    (ax7, r'$T_N$',           r'$\alpha_N$'),
 ]:
     ax.set_xlabel(xl);  ax.set_ylabel(yl)
     ax.legend();        ax.grid(True)

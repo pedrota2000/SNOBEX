@@ -18,8 +18,7 @@ phase transitions, for a general equation of state.
 
 - Interactive EoS explorer with real-time thermodynamic plots (GUI),
   including the critical-temperature common-tangent construction on the
-  entropy–energy panel and α_N against the nucleation temperature, for
-  supercooled and superheated nucleation.
+  entropy–energy panel.
 - Full phase-space computation of supercooled transitions: detonations,
   deflagrations, hybrids, and shocked detonations.
 - Superheated transitions (HT bubble expanding into the metastable LT
@@ -56,6 +55,10 @@ Superheated transitions (HT bubble expanding into the metastable LT phase):
   superheated window [e₋(T_c), e_TL].  They are bounded by the inverse
   Jouguet curve (dashed blue), where the flow in front of the wall is
   sonic; faster walls admit no junction state with the centre at rest.
+  From above they are bounded by the limiting inverse deflagrations
+  (dashed red): above the degenerate critical point of the LT phase the
+  rarefaction turns back before reaching rest, and the limiting ones
+  reach rest with an infinite slope.
 
 ---
 
@@ -82,7 +85,8 @@ snobex/
     supercooled.py              Supercooled solutions (LT bubble in metastable HT)
     supercooled_separators.py   Their separators and contours
     superheated.py              Superheated solutions (HT bubble in metastable LT)
-    superheated_separators.py   Their separators (so far the inverse Jouguet curve)
+    superheated_separators.py   Their separators (inverse Jouguet curve, limiting
+                                inverse deflagrations)
     plotting.py                 Interactive phase-space bubble plot (supercooled)
 
 main_eos_explorer.py     Interactive EoS explorer GUI (start here)
@@ -93,6 +97,9 @@ scripts/
                                       on p(e); drawn also where find_inverse_def
                                       rejects it, with the check that fails and a
                                       map of the failing checks
+    inverse_deflagration_limiting.py  limiting inverse deflagrations built from the
+                                      degenerate critical point (both kinds), with a
+                                      slider on the starting xi and the separator
 ```
 
 ---

@@ -186,13 +186,31 @@ def integrate_entropy_branches(eTH, eTL, p1, sTL, sTH, delta, n, n_pts=1000):
     e_minus = np.concatenate((np.flip(sol_fw.y[0][:-2]), sol_bw.y[0]))
     s_minus = np.concatenate((np.flip(sol_fw.t[:-2]),    sol_bw.t))
 
-    # HT branch — backward then forward
+    # HT branch — backward then forward.  Forwards it goes at least up to
+    # S = max(20, sTH + 15), and on until its temperature dE/dS exceeds the
+    # hottest LT state, (eTL + p-(eTL)) / sTL, so that every LT state has an
+    # HT partner at its temperature (alpha_N of superheated nucleation)
     y0 = [eTH]
     t_bw = np.flip(np.logspace(np.log10(1e-7), np.log10(sTH), n_pts))
     sol_bw = solve_ivp(entropy_ODE_plus, (t_bw[0], t_bw[-1]), y0,
                        t_eval=t_bw, args=(eTH, p1, delta),
                        method='RK45', rtol=1e-6, atol=1e-9)
-    t_fw = np.linspace(sTH, max(20.0, sTH + 15.0), n_pts)
+    s_top = max(20.0, sTH + 15.0)
+    T_lt_max = (eTL + float(pminus(eTL, eTL, n))) / sTL
+
+    def _hot_enough(s, y, *args):
+        return entropy_ODE_plus(s, y[0], *args)[0] - 1.05 * T_lt_max
+    _hot_enough.terminal = True
+
+    s_end = s_top
+    if _hot_enough(sTH, y0, eTH, p1, delta) < 0:
+        reach = solve_ivp(entropy_ODE_plus, (sTH, 1e4 * max(sTH, 1.0)), y0, args=(eTH, p1, delta),
+                          events=_hot_enough, method='RK45', rtol=1e-6, atol=1e-9)
+        if reach.t_events[0].size:
+            s_end = max(s_top, float(reach.t_events[0][0]))
+    t_fw = np.linspace(sTH, s_top, n_pts)
+    if s_end > s_top:
+        t_fw = np.concatenate((t_fw, np.geomspace(s_top, s_end, n_pts)[1:]))
     sol_fw = solve_ivp(entropy_ODE_plus, (t_fw[0], t_fw[-1]), y0,
                        t_eval=t_fw, args=(eTH, p1, delta),
                        method='RK45', rtol=1e-6, atol=1e-9)

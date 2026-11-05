@@ -22,7 +22,7 @@ from scipy.optimize import fsolve
 from scipy.interpolate import CubicSpline
 
 from .eos import Branch, pplus as _pplus_analytic, pminus as _pminus_analytic
-from .hydrodynamics import system_minus
+from .hydrodynamics import system_minus, pressure_balance_energy
 from .supercooled import (
     find_shocked_detonation, find_shocked_detonation_jouguet,
     shocked_detonation_strip, find_deto, find_def, find_hyb,
@@ -46,9 +46,12 @@ from .superheated import (
     superheated_window,
     inverse_def_entropy_ratio,
     alpha_n,
-    _ec_grid,
 )
-from .superheated_separators import inverse_jouguet_contour_finder
+from .superheated_separators import (
+    inverse_jouguet_contour_finder,
+    limiting_inverse_def_contour_finder,
+    dcp_energy,
+)
 
 
 def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energies_allowed,
@@ -638,7 +641,7 @@ def interactive_bubble_plot(eTH, eTL, nucleation_energies_allowed, bubble_energi
 
 
 def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25,
-                            contour_resolution=100, xiw_range=None, ec_range=None,
+                            contour_resolution=25, xiw_range=None, ec_range=None,
                             saving=False, output_dir="."):
     """
     Interactive phase-space plot of a superheated transition: a bubble of the
@@ -652,11 +655,15 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     outside, inside : Branch  LT and HT branches; their s and T are needed
                               for the entropy condition, alpha_N and T_c.
     xiw_resolution, en_resolution : int  Grid laid over the solution region.
-    contour_resolution : int  Points along each separator (default 100).
+    contour_resolution : int  Each separator is sampled uniformly at
+                              10 x contour_resolution points, as in
+                              ``interactive_bubble_plot`` (default 25).
     xiw_range, ec_range : (lo, hi), optional
         Ranges searched for solutions.  By default xi_w runs up to the
-        largest sound speed of the inside phase and E_C from the inside
-        turning point to 6 times it (capped at the table top).
+        largest sound speed of the inside phase, and E_C from the inside
+        turning point to the energy whose pressure equals that of the
+        outside phase at its turning point: beyond it no outside state can
+        balance the bubble (capped at the top of the inside branch).
     saving : bool  Pickle the results to ``output_dir`` (default False).
     output_dir : str  Directory for output files (default current directory).
 
@@ -667,7 +674,10 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     """
     Tc, e_out_Tc, e_in_Tc = superheated_window(outside, inside)
     if ec_range is None:
-        ec_range = (inside.e_turn * 1.001, min(inside.e_hi, 6.0 * inside.e_turn))
+        ec_top = pressure_balance_energy(inside, outside)      # p_in(E_C) = p_out(e_turn,out)
+        if not np.isfinite(ec_top):
+            ec_top = 6.0 * inside.e_turn
+        ec_range = (inside.e_turn * 1.001, min(inside.e_hi, ec_top))
     if xiw_range is None:
         cs2 = np.asarray(inside.cs2(np.linspace(*ec_range, 200)), dtype=float)
         cs_max = float(np.sqrt(np.nanmax(cs2))) if np.isfinite(cs2).any() else 0.99
@@ -709,20 +719,49 @@ def superheated_bubble_plot(outside, inside, xiw_resolution=25, en_resolution=25
     # ------------------------------------------------------------------
     # Inverse Jouguet deflagrations: the fastest walls with the centre at rest
     fig_det.suptitle("Computing inverse Jouguet deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
-    eC_jouguet = _ec_grid(outside, inside, ec_range, contour_resolution)
+    eC_jouguet = np.linspace(*ec_range, contour_resolution * 10)
+    jouguet = lambda eC: inverse_jouguet_contour_finder(eC, outside, inside)
     with concurrent.futures.ThreadPoolExecutor() as ex:
-        results = list(ex.map(
-            lambda eC: inverse_jouguet_contour_finder(eC, outside, inside), eC_jouguet))
+        results = list(ex.map(jouguet, eC_jouguet))
+    # sample the ends exactly: where E_N stops existing (the top end meets the
+    # limiting inverse deflagrations), then where alpha_N does
+    has_eN = lambda r: bool(np.all(np.isfinite(r)))
+    eC_jouguet, results = _refine_edges(jouguet, eC_jouguet, results, has_eN)
+    keep = np.array([has_eN(r) for r in results], dtype=bool)
+    eC_jouguet, results = _refine_edges(jouguet, eC_jouguet[keep], [r for r, k in zip(results, keep) if k],
+                                        lambda r: has_eN(r) and bool(np.isfinite(_alphan(r[1]))))
     j_xiw = np.array([r[0] for r in results], dtype=float)
     j_eN  = np.array([r[1] for r in results], dtype=float)
-    mask = ~np.isnan(j_xiw) & ~np.isnan(j_eN)
-    j_xiw, j_eN, j_eC = j_xiw[mask], j_eN[mask], eC_jouguet[mask]
+    j_eC  = np.asarray(eC_jouguet, dtype=float)
     ax_det.plot(j_xiw, j_eN, '--b', lw=2)
     ax_C.plot(j_xiw, j_eC, '--b', lw=2)
     ax_alpha.plot(j_xiw, np.array(list(map(_alphan, j_eN))), '--b', lw=2)
     results_dict['Local_contours']['inverse_jouguet'] = {
         'xi': j_xiw, 'eC': j_eC, 'eN': j_eN,
         'alpha': np.array(list(map(_alphan, j_eN)))}
+
+    # Limiting inverse deflagrations: the rarefaction reaches rest above the
+    # DCP with an infinite slope; the point of rest xi0 = c_s(E_N) is swept
+    fig_det.suptitle("Computing limiting inverse deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
+    e_star = dcp_energy(outside)
+    if np.isfinite(e_star):
+        c_star = float(np.sqrt(outside.cs2(e_star)))
+        xi0_lim = np.linspace(0.005 * c_star, 0.999 * c_star, contour_resolution * 10)
+        limiting = lambda xi0: limiting_inverse_def_contour_finder(xi0, outside, inside, e_star=e_star)[:3]
+        with concurrent.futures.ThreadPoolExecutor() as ex:
+            results = list(ex.map(limiting, xi0_lim))
+        # the end towards c_s(e*) is where the wall becomes Jouguet: the corner
+        # shared with the inverse Jouguet curve
+        xi0_lim, results = _refine_edges(limiting, xi0_lim, results, lambda r: bool(np.all(np.isfinite(r))))
+        l_xiw, l_eN, l_eC = (np.array(col, dtype=float) for col in zip(*results))
+        mask = np.isfinite(l_xiw) & np.isfinite(l_eN) & np.isfinite(l_eC)
+        l_xiw, l_eN, l_eC = l_xiw[mask], l_eN[mask], l_eC[mask]
+        ax_det.plot(l_xiw, l_eN, '--r', lw=2)
+        ax_C.plot(l_xiw, l_eC, '--r', lw=2)
+        ax_alpha.plot(l_xiw, np.array(list(map(_alphan, l_eN))), '--r', lw=2)
+        results_dict['Local_contours']['limiting_inverse_deflagration'] = {
+            'xi': l_xiw, 'eC': l_eC, 'eN': l_eN, 'e_star': e_star,
+            'alpha': np.array(list(map(_alphan, l_eN)))}
 
     fig_det.suptitle("Computing inverse deflagrations…"); fig_det.canvas.draw(); fig_det.canvas.flush_events()
 
@@ -844,6 +883,35 @@ def _plot_eos(pplus, pminus, eTH, eTL, p0, p1, e_max):
     ax_eos.set_title('Equation of State')
     ax_eos.legend();  ax_eos.grid(True)
     fig_eos.tight_layout();  fig_eos.show()
+
+
+def _refine_edges(f, xs, rows, valid, n_iter=12):
+    """
+    Add samples of a curve x -> f(x) at the ends of its valid stretches.
+    Between every pair of neighbouring samples whose ``valid(f(x))``
+    differs, bisect towards the edge and keep the last valid point.
+
+    Returns (xs, rows) with the new points merged in, sorted by x.
+    """
+    xs, rows = list(np.asarray(xs, dtype=float)), list(rows)
+    ok = [valid(r) for r in rows]
+    for i in range(len(ok) - 1):
+        if ok[i] == ok[i + 1]:
+            continue
+        good, bad = (xs[i], xs[i + 1]) if ok[i] else (xs[i + 1], xs[i])
+        best = None
+        for _ in range(n_iter):
+            mid = 0.5 * (good + bad)
+            r = f(mid)
+            if valid(r):
+                good, best = mid, r
+            else:
+                bad = mid
+        if best is not None:
+            xs.append(good)
+            rows.append(best)
+    order = np.argsort(xs)
+    return np.asarray(xs)[order], [rows[k] for k in order]
 
 
 def _batch_plot(ax_det, ax_C, ax_alpha, flows, marker, label, ms, alphan_func):
